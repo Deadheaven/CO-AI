@@ -8,6 +8,15 @@ export interface Member {
   online: boolean;
 }
 
+/** A live presence row for one member (member_id from the presence table). */
+export interface PresenceInfo {
+  memberId: string;
+  name: string;
+  color: string;
+  online: boolean;
+  lastSeen: number;
+}
+
 export type ThreadStatus =
   | "draft"
   | "planning"
@@ -49,6 +58,30 @@ export interface RepoFile {
 export type Vote = "approve" | "reject";
 export type DiffStatus = "pending" | "approved" | "rejected";
 
+/** Evidence attached to a diff (M3): the agent's self-QA report + test/lint output. */
+export interface QaCheck {
+  name: string;
+  passed: boolean;
+  detail?: string;
+}
+
+export interface QaReport {
+  summary: string;
+  verdict: "pass" | "fail";
+  checks: QaCheck[];
+}
+
+export interface TestEvidence {
+  command: string;
+  passed: boolean;
+  output: string;
+}
+
+export interface Evidence {
+  qa: QaReport;
+  tests?: TestEvidence;
+}
+
 export interface Diff {
   id: string;
   threadId: string;
@@ -60,7 +93,19 @@ export interface Diff {
   status: DiffStatus;
   votes: Record<string, Vote>;
   comment?: string;
+  evidence?: Evidence;
+  merged?: boolean;
+  prNumber?: number;
+  branch?: string;
 }
+
+/** Approval policy (PRD §11): configurable threshold, default majority with min 2. */
+export interface ApprovalPolicy {
+  mode: "majority" | "all";
+  min: number;
+}
+
+export const DEFAULT_POLICY: ApprovalPolicy = { mode: "majority", min: 2 };
 
 export interface Thread {
   id: string;
@@ -72,7 +117,7 @@ export interface Thread {
   ts: number;
 }
 
-export type RunStage = "queue" | "plan" | "write" | "qa" | "review" | "done";
+export type RunStage = "queue" | "plan" | "write" | "qa" | "review" | "done" | "blocked";
 
 export interface AgentRun {
   id: string;
@@ -81,6 +126,13 @@ export interface AgentRun {
   stage: RunStage;
   log: string[];
   startedAt: number;
+  finishedAt?: number;
+  /** What kicked the run off: "chat", "slash", "reject-fix", "copilot". */
+  trigger?: string;
+  /** When the LLM key is missing / the function is unreachable. */
+  notConfigured?: boolean;
+  /** Run queue: runs beyond the active one wait here (one active run per thread). */
+  queued?: boolean;
 }
 
 export interface CopilotMsg {

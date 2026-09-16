@@ -4,6 +4,7 @@ import type {
   ChatMsg,
   Diff,
   Member,
+  PresenceInfo,
   RepoFile,
   RunStage,
   Step,
@@ -25,6 +26,7 @@ export interface Snapshot {
   meId: string;
   me: Member;
   members: Member[];
+  presence: Record<string, PresenceInfo>;
   threads: Thread[];
   messages: ChatMsg[];
   steps: Step[];
@@ -35,7 +37,7 @@ export interface Snapshot {
 
 type Row = Record<string, unknown>;
 
-function memberFromRow(r: Row): Member {
+export function memberFromRow(r: Row): Member {
   return {
     id: String(r.id),
     name: (r.display_name as string) || "Member",
@@ -44,7 +46,7 @@ function memberFromRow(r: Row): Member {
   };
 }
 
-function threadFromRow(r: Row): Thread {
+export function threadFromRow(r: Row): Thread {
   const ts = Number(r.ts ?? 0) || (r.created_at ? new Date(String(r.created_at)).getTime() : 0);
   return {
     id: String(r.id),
@@ -57,7 +59,7 @@ function threadFromRow(r: Row): Thread {
   };
 }
 
-function msgFromRow(r: Row): ChatMsg {
+export function msgFromRow(r: Row): ChatMsg {
   const m: ChatMsg = {
     id: String(r.id),
     threadId: String(r.thread_id),
@@ -73,7 +75,7 @@ function msgFromRow(r: Row): ChatMsg {
   return m;
 }
 
-function stepFromRow(r: Row): Step {
+export function stepFromRow(r: Row): Step {
   const s: Step = {
     id: String(r.id),
     threadId: String(r.thread_id),
@@ -84,7 +86,7 @@ function stepFromRow(r: Row): Step {
   return s;
 }
 
-function diffFromRow(r: Row): Diff {
+export function diffFromRow(r: Row): Diff {
   const d: Diff = {
     id: String(r.id),
     threadId: String(r.thread_id),
@@ -97,11 +99,15 @@ function diffFromRow(r: Row): Diff {
     votes: (r.votes as Record<string, Vote>) ?? {},
   };
   if (r.comment != null) d.comment = String(r.comment);
+  if (r.evidence != null) d.evidence = r.evidence as Diff["evidence"];
+  if (r.merged != null) d.merged = Boolean(r.merged);
+  if (r.pr_number != null) d.prNumber = Number(r.pr_number);
+  if (r.branch != null) d.branch = String(r.branch);
   return d;
 }
 
-function runFromRow(r: Row): AgentRun {
-  return {
+export function runFromRow(r: Row): AgentRun {
+  const run: AgentRun = {
     id: String(r.id),
     threadId: String(r.thread_id),
     prompt: String(r.prompt ?? ""),
@@ -109,6 +115,11 @@ function runFromRow(r: Row): AgentRun {
     log: Array.isArray(r.log) ? (r.log as string[]) : [],
     startedAt: Number(r.started_at ?? 0),
   };
+  if (r.finished_at != null) run.finishedAt = Number(r.finished_at);
+  if (r.trigger != null) run.trigger = String(r.trigger);
+  if (r.not_configured != null) run.notConfigured = Boolean(r.not_configured);
+  if (r.queued != null) run.queued = Boolean(r.queued);
+  return run;
 }
 
 /**
@@ -174,7 +185,7 @@ export async function bootBackend(): Promise<{ ok: true; snapshot: Snapshot } | 
 
   // 3. snapshot --------------------------------------------------------------
   try {
-    const [membersRes, tmsRes, threadsRes, msgsRes, stepsRes, filesRes, diffsRes, runsRes, approvalsRes] =
+    const [membersRes, tmsRes, threadsRes, msgsRes, stepsRes, filesRes, diffsRes, runsRes, approvalsRes, presenceRes] =
       await Promise.all([
         sb.from("members").select("*"),
         sb.from("thread_members").select("thread_id,member_id"),
@@ -185,18 +196,33 @@ export async function bootBackend(): Promise<{ ok: true; snapshot: Snapshot } | 
         sb.from("diffs").select("*"),
         sb.from("agent_runs").select("*"),
         sb.from("approvals").select("diff_id,member_id,verdict"),
+        sb.from("presence").select("*"),
       ]);
 
     const threadRows = (threadsRes.data as Row[] | null) ?? [];
     const tmRows = (tmsRes.data as Row[] | null) ?? [];
     const memberRows = (membersRes.data as Row[] | null) ?? [];
 
+    const presenceMap: Record<string, PresenceInfo> = {};
+    for (const p of (presenceRes.data as Row[] | null) ?? []) {
+      const pid = String(p.member_id);
+      presenceMap[pid] = {
+        memberId: pid,
+        name: String(p.name ?? ""),
+        color: String(p.color ?? COLORS[0]),
+        online: true,
+        lastSeen: Date.parse(String(p.last_seen ?? "")) || Date.now(),
+      };
+    }
+
     const membersById = new Map<string, Member>();
     memberRows.forEach((r) => {
       const m = memberFromRow(r);
+      m.online = m.id === userId || Boolean(presenceMap[m.id]);
       membersById.set(m.id, m);
     });
     const me = membersById.get(userId) ?? memberFromRow(meRow);
+    me.online = true;
 
     const threadMap = new Map<string, string[]>();
     tmRows.forEach((tm) => {
@@ -250,7 +276,18 @@ export async function bootBackend(): Promise<{ ok: true; snapshot: Snapshot } | 
 
     return {
       ok: true,
-      snapshot: { meId: me.id, me, members: [...membersById.values()], threads, messages, steps, files, diffs, runs },
+      snapshot: {
+        meId: me.id,
+        me,
+        members: [...membersById.values()],
+        presence: presenceMap,
+        threads,
+        messages,
+        steps,
+        files,
+        diffs,
+        runs,
+      },
     };
   } catch (e) {
     console.warn("[co-ai] snapshot failed:", e);
@@ -355,7 +392,11 @@ export async function persistDiff(diff: Diff, evidence?: unknown): Promise<boole
   const { error } = await sb.from("diffs").upsert({
     id: diff.id, thread_id: diff.threadId, run_id: diff.runId || null, path: diff.path,
     label: diff.label, before: diff.before, after: diff.after, status: diff.status,
-    votes: diff.votes as Row, comment: diff.comment ?? null, evidence: evidence ?? null,
+    votes: diff.votes as Row, comment: diff.comment ?? null,
+    evidence: evidence ?? diff.evidence ?? null,
+    merged: diff.merged ?? false,
+    pr_number: diff.prNumber ?? null,
+    branch: diff.branch ?? null,
     ts: Date.now(),
   });
   return !error;
@@ -381,6 +422,10 @@ export async function persistRun(run: AgentRun): Promise<boolean> {
   const { error } = await sb.from("agent_runs").upsert({
     id: run.id, thread_id: run.threadId, prompt: run.prompt, state: run.stage,
     log: run.log, started_at: run.startedAt,
+    finished_at: run.finishedAt ?? null,
+    trigger: run.trigger ?? null,
+    not_configured: run.notConfigured ?? false,
+    queued: run.queued ?? false,
   });
   return !error;
 }
@@ -398,3 +443,94 @@ export function makeCode(name: string): string {
 }
 
 export const isDemo = !getSupabase();
+
+/* ---------- presence (M1 realtime team layer) ---------- */
+
+export function presenceFromRow(r: Row): PresenceInfo {
+  const memberId = String(r.member_id);
+  return {
+    memberId,
+    name: String(r.name ?? ""),
+    color: String(r.color ?? COLORS[0]),
+    online: true,
+    lastSeen: Date.parse(String(r.last_seen ?? "")) || Date.now(),
+  };
+}
+
+/** Current presence rows, keyed by member id. */
+export async function fetchPresence(): Promise<Record<string, PresenceInfo>> {
+  const sb = getSupabase();
+  if (!sb) return {};
+  const { data } = await sb.from("presence").select("*");
+  const out: Record<string, PresenceInfo> = {};
+  for (const r of (data as Row[] | null) ?? []) out[String(r.member_id)] = presenceFromRow(r);
+  return out;
+}
+
+/** Announce I'm here (join + heartbeat). Idempotent upsert. */
+export async function upsertPresence(m: { id: string; name: string; color: string }): Promise<boolean> {
+  const sb = getSupabase();
+  if (!sb) return false;
+  const { error } = await sb
+    .from("presence")
+    .upsert(
+      { member_id: m.id, name: m.name, color: m.color, last_seen: new Date().toISOString() },
+      { onConflict: "member_id" }
+    );
+  return !error;
+}
+
+/** Best-effort leave (tab hide / unload) so teammates see you drop instantly. */
+export async function clearPresence(memberId: string): Promise<boolean> {
+  const sb = getSupabase();
+  if (!sb) return false;
+  const { error } = await sb.from("presence").delete().eq("member_id", memberId);
+  return !error;
+}
+
+/* ---------- M2/M3: Edge Function calls ---------- */
+
+export interface AgentInvokeResult {
+  ok: boolean;
+  reason?: string;
+  queued?: boolean;
+  message?: string;
+}
+
+/** Fire the coai-agent Edge Function for a real LLM run (M2). */
+export async function invokeAgent(payload: { threadId: string; runId: string; prompt: string }): Promise<AgentInvokeResult> {
+  const sb = getSupabase();
+  if (!sb) return { ok: false, reason: "not-configured" };
+  try {
+    const { data, error } = await sb.functions.invoke("coai-agent", {
+      body: payload,
+    });
+    if (error) return { ok: false, reason: error.message };
+    return (data as AgentInvokeResult) ?? { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export interface MergeInvokeResult {
+  ok: boolean;
+  reason?: string;
+  prNumber?: number;
+  merged?: boolean;
+  message?: string;
+}
+
+/** Ask coai-gh to open a PR / merge once the gate passes (M3, real repo mode). */
+export async function invokeMerge(threadId: string): Promise<MergeInvokeResult> {
+  const sb = getSupabase();
+  if (!sb) return { ok: false, reason: "not-configured" };
+  try {
+    const { data, error } = await sb.functions.invoke("coai-gh", {
+      body: { threadId, action: "merge" },
+    });
+    if (error) return { ok: false, reason: error.message };
+    return (data as MergeInvokeResult) ?? { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}

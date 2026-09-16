@@ -1,5 +1,6 @@
 import {
   dbWithGuard,
+  evidenceFor,
   inferSteps,
   now,
   seedRepo,
@@ -61,6 +62,8 @@ const diffA: Diff = {
   after: afterA,
   status: "approved",
   votes: { [ME_ID]: "approve", mika: "approve", rai: "approve" },
+  evidence: evidenceFor("Add idempotent refund endpoint", afterA),
+  merged: true,
 };
 
 const threadA: Thread = {
@@ -113,11 +116,13 @@ const diffB1: Diff = {
   id: uid(), threadId: "t-dup", runId: "r-dup", path: "src/routes/payments.ts",
   label: "Accept idempotency key on charge",
   before: payB0, after: withIdempotency(payB0), status: "pending", votes: {},
+  evidence: evidenceFor("Accept idempotency key on charge", withIdempotency(payB0)),
 };
 const diffB2: Diff = {
   id: uid(), threadId: "t-dup", runId: "r-dup", path: "src/db.ts",
   label: "Dedupe charges by idempotency key",
   before: dbB0, after: dbWithGuard(dbB0), status: "pending", votes: {},
+  evidence: evidenceFor("Dedupe charges by idempotency key", dbWithGuard(dbB0)),
 };
 
 const threadB: Thread = {

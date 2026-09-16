@@ -1,4 +1,4 @@
-import type { RepoFile, ThreadStatus } from "../types";
+import type { Evidence, RepoFile, ThreadStatus } from "../types";
 
 /* ---------- basics ---------- */
 export const uid = () => Math.random().toString(36).slice(2, 10);
@@ -225,6 +225,38 @@ export function inferSteps(prompt: string): string[] {
     base.push(`Scope “${prompt}”`, "Implement the change", "Self-review + QA pass");
   }
   return base;
+}
+
+/* ---------- M3: demo self-QA evidence for a diff ---------- */
+/** Build the mock agent's evidence card for a mutation (demo mode parity). */
+export function evidenceFor(label: string, after: string): Evidence {
+  const hasReturn = after.includes("return {");
+  const hasGuard = after.includes("if (!") || after.includes("if (") || after.includes("error:");
+  return {
+    qa: {
+      summary: `Self-QA passed for “${label}”: change is scoped, types intact, edge cases covered.`,
+      verdict: "pass",
+      checks: [
+        { name: "Types & imports resolve", passed: true },
+        { name: "Guard clauses for error paths", passed: hasGuard, detail: hasGuard ? undefined : "No explicit guard found — acceptable for pure additions." },
+        { name: "Return shape unchanged for existing callers", passed: hasReturn, detail: hasReturn ? undefined : "Existing callers keep their contract." },
+      ],
+    },
+    tests: {
+      command: "deno test --allow-none",
+      passed: true,
+      output: [
+        "check file:///src/routes/payments.ts",
+        "check file:///src/db.ts",
+        "running 4 tests",
+        "  ✓ charge creates a charge",
+        "  ✓ refund credits balance once",
+        "  ✓ duplicate idempotency key returns existing charge",
+        "  ✓ validator rejects negative amounts",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured",
+      ].join("\n"),
+    },
+  };
 }
 
 /* ---------- thread status order ---------- */

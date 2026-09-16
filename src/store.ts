@@ -4,6 +4,7 @@ import { AGENT_ID, ME_ID, buildSeed } from "./seed";
 import {
   BOT_NUDGE_POOL,
   BOT_REPLY_POOL,
+  evidenceFor,
   inferSteps,
   now,
   pick,
@@ -14,25 +15,48 @@ import {
 import {
   bootBackend,
   createLiveThread,
+  diffFromRow,
+  invokeAgent,
   joinLiveThread,
+  memberFromRow,
+  msgFromRow,
   persistDiff,
   persistMessage,
   persistRun,
   persistStep,
+  runFromRow,
+  stepFromRow,
+  threadFromRow,
   updateMemberProfile,
   updateThreadStatus,
   voteOnDiff,
 } from "./lib/api";
+import {
+  presenceStaleMs,
+  setPresenceRefresher,
+  setRealtimeHandler,
+  startRealtime,
+  stopRealtime,
+  trackPresence,
+  updateTrackedPresence,
+} from "./lib/realtime";
+import type { RealtimeEvent } from "./lib/realtime";
+import { decodeTabSnapshot, mergeTabSnapshot } from "./lib/tabsync";
+import type { TabSnapshot } from "./lib/tabsync";
+import { diffGate, threadGate } from "./lib/gate";
 import type {
   AgentRun,
   ChatMsg,
   CopilotMsg,
   Diff,
+  Member,
+  PresenceInfo,
   RepoFile,
   RunStage,
   Step,
   Thread,
 } from "./types";
+import { DEFAULT_POLICY } from "./types";
 
 export const AGENT = "agent";
 
@@ -79,10 +103,15 @@ export async function initStore(): Promise<"live" | "demo"> {
   const res = await bootBackend();
   if (!res.ok) {
     useStore.getState().resetDemo(); // guarantee the demo path stays identical
+    startDemoTabSync();
     return "demo";
   }
   live = true;
   useStore.setState({ ...res.snapshot, simOn: true, copilot: {} });
+  setRealtimeHandler(applyRealtimeEvent);
+  setPresenceRefresher(applyPresenceRefresh);
+  startRealtime();
+  trackPresence({ id: res.snapshot.me.id, name: res.snapshot.me.name, color: res.snapshot.me.color });
   return "live";
 }
 
@@ -111,10 +140,13 @@ const mkMsg = (
 interface CoAIState extends ReturnType<typeof buildSeed> {
   simOn: boolean;
   copilot: Record<string, CopilotMsg[]>;
+  presence: Record<string, PresenceInfo>;
   sendMessage: (threadId: string, body: string) => void;
   runAgent: (threadId: string, prompt: string) => void;
   vote: (diffId: string, verdict: "approve" | "reject", comment?: string) => void;
   botVote: (diffId: string, memberId: string) => void;
+  /** M3: explicitly merge a thread once its gate passes (live: coai-gh; demo: in-place). */
+  merge: (threadId: string) => Promise<boolean>;
   toggleStep: (stepId: string) => void;
   addStep: (threadId: string, title: string) => void;
   createThread: (name: string, description: string) => Promise<string>;
@@ -128,32 +160,77 @@ interface CoAIState extends ReturnType<typeof buildSeed> {
 
 const scheduledVotes = new Set<string>();
 
-function maybeShip() {
+/** Team size used by the gate = humans + bots on the thread (demo) or members. */
+function threadTeamSize(thread: Thread, members: Member[]): number {
+  return members.filter((m) => thread.memberIds.includes(m.id)).length;
+}
+
+/**
+ * After any vote lands, re-check each still-pending diff on the thread:
+ * when a diff's own gate passes (evidence + approval threshold) it flips to
+ * "approved". This NEVER ships — approvals may fill (including from bots), the
+ * diff status advances, but the thread itself stays at review until a human
+ * clicks "Merge to ship" (see shipThread). The gate becomes a deliberate team
+ * decision, not an auto-merge.
+ */
+function recountGates(threadId: string): void {
   const st = useStore.getState();
-  const threadsWithWork = st.threads.filter((t) => st.diffs.some((d) => d.threadId === t.id && d.status === "pending"));
-  threadsWithWork.forEach((thread) => {
-    const pending = st.diffs.filter((d) => d.threadId === thread.id && d.status === "pending");
-    if (!pending.length) return;
-    const onThread = st.members.filter((m) => thread.memberIds.includes(m.id));
-    const allApproved = pending.every((d) => onThread.every((m) => d.votes[m.id] === "approve"));
-    if (!allApproved) return;
-    const diffs = st.diffs.map((d) => (d.threadId === thread.id ? { ...d, status: "approved" as const } : d));
-    const runId = pending[0]!.runId;
-    const sysMsg = mkMsg(thread.id, AGENT_ID, "system", "All diffs approved by the team — merged and shipped.");
-    useStore.setState({
-      diffs,
-      threads: st.threads.map((t) => (t.id === thread.id ? { ...t, status: "shipped" as const, ts: now() } : t)),
-      steps: st.steps.map((s) => (s.threadId === thread.id ? { ...s, status: "done" as const } : s)),
-      runs: { ...st.runs, [runId]: { ...st.runs[runId]!, stage: "done" as RunStage } },
-      messages: [...st.messages, sysMsg],
-    });
-    if (live) {
-      diffs.filter((d) => d.threadId === thread.id).forEach((d) => void persistDiff(d));
-      void persistMessage(sysMsg);
-      void updateThreadStatus(thread.id, "shipped", now());
-      syncThread(thread.id);
-    }
+  const thread = st.threads.find((t) => t.id === threadId);
+  if (!thread || thread.status === "shipped") return;
+  const team = threadTeamSize(thread, st.members);
+  const flipped: Diff[] = [];
+  const diffs = st.diffs.map((d) => {
+    if (d.threadId !== threadId || d.status !== "pending") return d;
+    if (!diffGate(d, team, DEFAULT_POLICY).canMerge) return d;
+    const nd = { ...d, status: "approved" as const };
+    flipped.push(nd);
+    return nd;
   });
+  if (!flipped.length) return;
+  useStore.setState({ diffs });
+  if (live) flipped.forEach((d) => void persistDiff(d));
+}
+
+/**
+ * M3 ship — the ONLY path that ships a thread, and it requires an explicit
+ * human merge action (the "Merge to ship" control; demo: in-place file
+ * update; live: coai-gh validated the merge server-side under RLS, which
+ * blocks any client-side merged=true, and this reconciles the snapshot).
+ * Structural preconditions, re-checked here so a shipped thread can never
+ * carry unapproved work:
+ *   (a) every diff on the thread is already "approved" (zero pending), and
+ *   (b) the whole-thread gate passes again (evidence + threshold).
+ * Shipped is terminal — a late vote or repeat merge is a no-op.
+ */
+function shipThread(threadId: string): boolean {
+  const st = useStore.getState();
+  const thread = st.threads.find((t) => t.id === threadId);
+  if (!thread || thread.status === "shipped") return false;
+  const threadDiffs = st.diffs.filter((d) => d.threadId === threadId);
+  if (!threadDiffs.length) return false;
+  if (threadDiffs.some((d) => d.status !== "approved")) return false;
+
+  const team = threadTeamSize(thread, st.members);
+  const gate = threadGate(threadDiffs, team, DEFAULT_POLICY);
+  if (!gate.canMerge) return false;
+
+  const diffs = st.diffs.map((d) => (d.threadId === threadId ? { ...d, status: "approved" as const, merged: true } : d));
+  const runId = threadDiffs[0]!.runId;
+  const sysMsg = mkMsg(thread.id, AGENT_ID, "system", `Approval gate passed (${gate.approvals}/${gate.required}) — merged and shipped.`);
+  useStore.setState({
+    diffs,
+    threads: st.threads.map((t) => (t.id === thread.id ? { ...t, status: "shipped" as const, ts: now() } : t)),
+    steps: st.steps.map((s) => (s.threadId === thread.id ? { ...s, status: "done" as const } : s)),
+    runs: { ...st.runs, [runId]: { ...st.runs[runId]!, stage: "done" as RunStage, finishedAt: now() } },
+    messages: [...st.messages, sysMsg],
+  });
+  if (live) {
+    diffs.filter((d) => d.threadId === thread.id).forEach((d) => void persistDiff(d));
+    void persistMessage(sysMsg);
+    void updateThreadStatus(thread.id, "shipped", now());
+    syncThread(thread.id);
+  }
+  return true;
 }
 
 export const useStore = create<CoAIState>()(
@@ -162,6 +239,7 @@ export const useStore = create<CoAIState>()(
       ...buildSeed(),
       simOn: true,
       copilot: {},
+      presence: {},
 
       sendMessage: (threadId, body) => {
         const text = body.trim();
@@ -197,6 +275,21 @@ export const useStore = create<CoAIState>()(
         if (live) {
           void persistRun(run);
           void updateThreadStatus(threadId, "planning", now());
+          // M2: real loop lives in the coai-agent Edge Function; the client
+          // only fires it and reconciles via realtime. If the function is not
+          // configured, it marks the run not-configured and we fall back to
+          // the local mock so the thread stays usable (PRD §5 error path).
+          void invokeAgent({ threadId, runId, prompt }).then((res) => {
+            if (res.ok) return;
+            const cur = useStore.getState();
+            const r = cur.runs[runId];
+            if (!r) return;
+            useStore.setState({
+              runs: { ...cur.runs, [runId]: { ...r, notConfigured: true, stage: "blocked" } },
+              threads: cur.threads.map((t) => (t.id === threadId ? { ...t, status: "blocked", ts: now() } : t)),
+            });
+          });
+          return; // real mode: the function drives steps/diffs/messages via DB + realtime
         }
 
         const logStage = (stage: RunStage, line: string) =>
@@ -245,6 +338,8 @@ export const useStore = create<CoAIState>()(
             newDiffs.push({
               id: diffId, threadId, runId, path: m.path, label: m.label,
               before: m.before, after: m.after, status: "pending", votes: {},
+              // M3: demo diffs ship with the same evidence contract as the live agent
+              evidence: evidenceFor(m.label, m.after),
             });
             const idx = newFiles.findIndex((f) => f.path === m.path);
             if (idx >= 0) newFiles[idx] = { path: m.path, content: m.after };
@@ -311,7 +406,7 @@ export const useStore = create<CoAIState>()(
             syncThread(thread.id);
           }
         }
-        if (verdict === "approve") maybeShip();
+        if (verdict === "approve") recountGates(diff.threadId);
       },
 
       botVote: (diffId, memberId) => {
@@ -324,7 +419,43 @@ export const useStore = create<CoAIState>()(
             d.id === diffId ? { ...d, votes: { ...d.votes, [memberId]: "approve" as const } } : d
           ),
         }));
-        maybeShip();
+        // Bots fill approval votes but never ship — shipping stays a human
+        // action (the "Merge to ship" control). Votes can still flip a diff
+        // to "approved" so the UI surfaces the gate state.
+        recountGates(diff.threadId);
+      },
+
+      merge: async (threadId) => {
+        const st = get();
+        const thread = st.threads.find((t) => t.id === threadId);
+        if (!thread) return false;
+        const threadDiffs = st.diffs.filter((d) => d.threadId === threadId);
+        const team = threadTeamSize(thread, st.members);
+        const gate = threadGate(threadDiffs, team, DEFAULT_POLICY);
+        if (!gate.canMerge) {
+          // structural: never unlock without the gate
+          useStore.setState((s) => ({
+            messages: [...s.messages, mkMsg(threadId, AGENT_ID, "system", `Merge locked — ${gate.reason}`)],
+          }));
+          return false;
+        }
+        if (live) {
+          // real mode: coai-gh re-checks the gate server-side (RLS blocks
+          // any client-side merged=true). Best-effort; realtime reconciles.
+          const { invokeMerge } = await import("./lib/api");
+          const res = await invokeMerge(threadId);
+          if (res?.ok) {
+            shipThread(threadId);
+            return true;
+          }
+          useStore.setState((s) => ({
+            messages: [...s.messages, mkMsg(threadId, AGENT_ID, "system", `Merge unavailable — ${res?.reason ?? "connector not configured"}`)],
+          }));
+          return false;
+        }
+        // demo: in-place file update, same contract as the live merge
+        shipThread(threadId);
+        return true;
       },
 
       toggleStep: (stepId) => {
@@ -413,7 +544,10 @@ export const useStore = create<CoAIState>()(
         set((s) => ({
           members: s.members.map((m) => (m.id === meIdNow ? { ...m, name: clean, color } : m)),
         }));
-        if (live) void updateMemberProfile(meIdNow, clean, color);
+        if (live) {
+          void updateMemberProfile(meIdNow, clean, color);
+          updateTrackedPresence({ id: meIdNow, name: clean, color });
+        }
       },
 
       askCopilot: (threadId, text) => {
@@ -504,8 +638,10 @@ export const useStore = create<CoAIState>()(
 
       resetDemo: () => {
         live = false;
+        stopRealtime();
+        stopDemoTabSync();
         clearTimers();
-        set({ ...buildSeed(), simOn: true, copilot: {} });
+        set({ ...buildSeed(), simOn: true, copilot: {}, presence: {} });
       },
 
       setSim: (on) => set({ simOn: on }),
@@ -549,4 +685,199 @@ function copilotSummary(thread: Thread | undefined, st: CoAIState): string {
   return recent.length
     ? `Latest on “${thread?.name}”:\n${recent.join("\n")}`
     : `“${thread?.name}” is fresh — no activity yet.`;
+}
+
+/* ---------- demo cross-tab sync (demo only, no backend needed) ---------- */
+
+const STORE_KEY = "coai-store-v1"; // zustand persist key — must match the persist() name
+let tabSyncOn = false;
+let tabSyncListener: ((e: StorageEvent) => void) | null = null;
+
+/**
+ * Demo mode: broadcast the persisted store to other tabs via the localStorage
+ * "storage" event (fires only in *other* tabs) and merge idempotently with the
+ * same incoming-wins semantics as the live reconciler. This lets the "message
+ * lands in every open tab instantly / profile edit shows on the other screen"
+ * DoD be validated with zero backend. Live mode never runs this — realtime.ts
+ * owns that path — and the merge is pure (tested in tabsync.test.ts).
+ */
+function startDemoTabSync(): void {
+  if (tabSyncOn) return;
+  tabSyncOn = true;
+  const onStorage = (e: StorageEvent) => {
+    if (e.key !== STORE_KEY || e.newValue == null) return;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(e.newValue);
+    } catch {
+      return;
+    }
+    // zustand persist stores { state, version } — unwrap before merging, or
+    // every cross-tab event is silently dropped (incoming.threads undefined).
+    const incoming = decodeTabSnapshot(raw);
+    if (!incoming) return;
+    const s = useStore.getState();
+    const cur: TabSnapshot = {
+      threads: s.threads,
+      messages: s.messages,
+      steps: s.steps,
+      diffs: s.diffs,
+      runs: s.runs,
+      files: s.files,
+      members: s.members,
+      copilot: s.copilot,
+    };
+    const { next, changed } = mergeTabSnapshot(cur, incoming);
+    if (changed) useStore.setState({ ...next });
+  };
+  window.addEventListener("storage", onStorage);
+  tabSyncListener = onStorage;
+}
+
+/** Tear down the demo tab sync (demo reset). */
+function stopDemoTabSync(): void {
+  if (!tabSyncOn) return;
+  tabSyncOn = false;
+  if (tabSyncListener) window.removeEventListener("storage", tabSyncListener);
+  tabSyncListener = null;
+}
+
+/* ---------- realtime reconciliation (live only) ---------- */
+
+function upsertById<T extends { id: string }>(arr: T[], item: T): T[] {
+  const idx = arr.findIndex((x) => x.id === item.id);
+  if (idx === -1) return [...arr, item];
+  const cp = arr.slice();
+  cp[idx] = item;
+  return cp;
+}
+
+/** A newly-seen teammate (just joined via share code / first presence) is added. */
+function upsertMember(members: Member[], m: Member): Member[] {
+  const idx = members.findIndex((x) => x.id === m.id);
+  if (idx === -1) return [...members, m];
+  const cp = members.slice();
+  cp[idx] = m;
+  return cp;
+}
+
+/** Source-of-truth events from Supabase Realtime. Merges idempotently by PK,
+ *  so local writes echoing back are harmless and remote writes always land. */
+function applyRealtimeEvent(ev: RealtimeEvent): void {
+  const { table, event, row } = ev;
+  const st = useStore.getState();
+  const id = typeof row.id === "string" ? row.id : String(row.id ?? "");
+
+  switch (table) {
+    case "presence": {
+      const memberId = String(row.member_id ?? "");
+      if (!memberId) break;
+      if (event === "DELETE") {
+        const presence = { ...st.presence };
+        delete presence[memberId];
+        useStore.setState({
+          presence,
+          members: st.members.map((m) => (m.id === memberId ? { ...m, online: false } : m)),
+        });
+      } else {
+        const info: PresenceInfo = {
+          memberId,
+          name: String(row.name ?? ""),
+          color: String(row.color ?? ""),
+          online: true,
+          lastSeen: Date.parse(String(row.last_seen ?? "")) || Date.now(),
+        };
+        const member: Member = {
+          id: memberId,
+          name: info.name || "Member",
+          color: info.color || "#93c5fd",
+          online: true,
+        };
+        useStore.setState((s) => ({
+          presence: { ...s.presence, [memberId]: info },
+          members: upsertMember(s.members, member),
+        }));
+      }
+      break;
+    }
+    case "members": {
+      if (!row.id) break;
+      const rowMember = memberFromRow(row);
+      useStore.setState((s) => {
+        const p = s.presence[rowMember.id];
+        const updated: Member = {
+          ...rowMember,
+          online: rowMember.id === s.meId ? true : Boolean(p),
+        };
+        return {
+          members: s.members.some((x) => x.id === rowMember.id)
+            ? s.members.map((x) => (x.id === rowMember.id ? updated : x))
+            : [...s.members, updated],
+        };
+      });
+      break;
+    }
+    case "messages": {
+      if (!row.id) break;
+      if (event === "DELETE") {
+        useStore.setState({ messages: st.messages.filter((x) => x.id !== id) });
+      } else {
+        const msg = msgFromRow(row);
+        useStore.setState({ messages: upsertById(st.messages, msg).sort((a, b) => a.ts - b.ts) });
+      }
+      break;
+    }
+    case "steps": {
+      if (!row.id) break;
+      if (event === "DELETE") {
+        useStore.setState({ steps: st.steps.filter((x) => x.id !== id) });
+      } else {
+        useStore.setState({ steps: upsertById(st.steps, stepFromRow(row)) });
+      }
+      break;
+    }
+    case "diffs": {
+      if (!row.id) break;
+      if (event === "DELETE") {
+        useStore.setState({ diffs: st.diffs.filter((x) => x.id !== id) });
+      } else {
+        useStore.setState({ diffs: upsertById(st.diffs, diffFromRow(row)) });
+      }
+      break;
+    }
+    case "agent_runs": {
+      if (!row.id) break;
+      const run = runFromRow(row);
+      useStore.setState({ runs: { ...st.runs, [run.id]: run } });
+      break;
+    }
+    case "threads": {
+      if (!row.id) break;
+      const thread = threadFromRow(row);
+      useStore.setState({ threads: upsertById(st.threads, thread).sort((a, b) => b.ts - a.ts) });
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/** Periodic re-read of the presence table → scale-based online/offline. */
+function applyPresenceRefresh(rows: Record<string, PresenceInfo>): void {
+  const st = useStore.getState();
+  const nowMs = Date.now();
+  const map: Record<string, PresenceInfo> = {};
+  for (const [id, info] of Object.entries(rows)) {
+    map[id] = { ...info, online: id === st.meId ? true : nowMs - info.lastSeen < presenceStaleMs };
+  }
+  useStore.setState({
+    presence: map,
+    members: st.members.map((m) => {
+      const p = map[m.id];
+      if (m.id === st.meId) return { ...m, online: true, name: p?.name || m.name, color: p?.color || m.color };
+      return p
+        ? { ...m, online: p.online, name: p.name || m.name, color: p.color || m.color }
+        : { ...m, online: false };
+    }),
+  });
 }

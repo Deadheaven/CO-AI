@@ -11,6 +11,7 @@ import {
   MessageSquare,
   PanelRight,
   Send,
+  ShieldCheck,
   Sparkles,
   ThumbsDown,
   ThumbsUp,
@@ -157,7 +158,12 @@ function DiffCard({ diff, members, onOpenFile }: { diff: Diff; members: Map<stri
   const [note, setNote] = useState("");
   const voters = [...members.entries()].filter(([, m]) => m);
   const approvalCount = voters.filter(([id]) => diff.votes[id] === "approve").length;
+  const required = Math.max(2, Math.floor(voters.length / 2) + 1);
+  const pct = Math.min(100, Math.round((approvalCount / Math.max(1, required)) * 100));
   const text = useMemo(() => buildUnifiedDiff(diff.path, diff.before, diff.after), [diff]);
+  const hasEvidence = Boolean(diff.evidence?.qa?.verdict);
+  const evidencePass = diff.evidence?.qa?.verdict === "pass" && (!diff.evidence?.tests || diff.evidence.tests.passed);
+  const [evOpen, setEvOpen] = useState(false);
   const statusChip =
     diff.status === "approved" ? (
       <span className="rounded-full bg-success/12 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wide text-success">approved</span>
@@ -175,6 +181,9 @@ function DiffCard({ diff, members, onOpenFile }: { diff: Diff; members: Map<stri
           <span className="block truncate font-mono text-[11px] text-foreground/85">{diff.path}</span>
           <span className="block truncate text-[10px] text-foreground/50">{diff.label}</span>
         </span>
+        {diff.merged && (
+          <span className="rounded-full bg-success/12 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wide text-success">merged</span>
+        )}
         {statusChip}
         {open ? <ChevronDown size={13} className="text-foreground/40" /> : <ChevronRight size={13} className="text-foreground/40" />}
       </button>
@@ -190,6 +199,60 @@ function DiffCard({ diff, members, onOpenFile }: { diff: Diff; members: Map<stri
               ))}
             </pre>
           </div>
+
+          {/* M3: evidence */}
+          <div className="border-t border-border/70">
+            <button
+              onClick={() => setEvOpen(!evOpen)}
+              aria-expanded={evOpen}
+              className={cn(
+                "flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left",
+                hasEvidence ? (evidencePass ? "text-success" : "text-destructive") : "text-foreground/50"
+              )}
+            >
+              <ShieldCheck size={13} className={cn("shrink-0", evidencePass ? "text-success" : "text-foreground/40")} />
+              <span className="text-[10.5px] font-semibold">
+                {hasEvidence ? (evidencePass ? "Evidence attached — self-QA passed" : "Evidence attached — self-QA failed") : "No evidence yet"}
+              </span>
+              {evOpen ? <ChevronDown size={12} className="ml-auto" /> : <ChevronRight size={12} className="ml-auto" />}
+            </button>
+            {evOpen && diff.evidence && (
+              <div className="scroll-thin max-h-48 space-y-2 overflow-auto border-t border-border/70 px-3 py-2">
+                <p className="text-[11px] leading-relaxed text-foreground/70">{diff.evidence.qa.summary}</p>
+                <ul className="flex flex-col gap-1">
+                  {diff.evidence.qa.checks.map((c, i) => (
+                    <li key={i} className="flex items-start gap-1.5 text-[10.5px]">
+                      {c.passed ? <Check size={11} className="mt-0.5 shrink-0 text-success" /> : <X size={11} className="mt-0.5 shrink-0 text-destructive" />}
+                      <span className={c.passed ? "text-foreground/75" : "text-destructive"}>{c.name}</span>
+                      {c.detail && <span className="text-foreground/45">— {c.detail}</span>}
+                    </li>
+                  ))}
+                </ul>
+                {diff.evidence.tests && (
+                  <details className="rounded-lg border border-border bg-canvas/60">
+                    <summary className="cursor-pointer px-2 py-1.5 font-mono text-[10px] text-foreground/65">
+                      {diff.evidence.tests.command} <span className={diff.evidence.tests.passed ? "text-success" : "text-destructive"}>{diff.evidence.tests.passed ? "✓ passed" : "✕ failed"}</span>
+                    </summary>
+                    <pre className="scroll-thin max-h-32 overflow-auto whitespace-pre-wrap px-2 pb-2 font-mono text-[9.5px] leading-relaxed text-foreground/60">{diff.evidence.tests.output}</pre>
+                  </details>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* M3: approval progress */}
+          {diff.status === "pending" && (
+            <div className="border-t border-border/70 px-3 py-2">
+              <div className="mb-1 flex items-center justify-between text-[10px]">
+                <span className="text-foreground/55">Team approval</span>
+                <span className="text-foreground/45">{approvalCount}/{required} · {pct}%</span>
+              </div>
+              <div role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} className="h-1.5 w-full overflow-hidden rounded-full bg-foreground/10">
+                <div className={cn("h-full rounded-full transition-all duration-300", pct >= 100 ? "bg-success" : "bg-accent")} style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 px-3 py-2">
             <div className="flex items-center gap-2">
               <span className="text-[10px] text-foreground/45">{approvalCount}/{voters.length} approved</span>
@@ -332,11 +395,14 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
   const messages = useStore((s) => s.messages);
   const steps = useStore((s) => s.steps);
   const diffs = useStore((s) => s.diffs);
+  const runs = useStore((s) => s.runs);
   const files = useStore((s) => s.files);
   const meId = useStore((s) => s.meId);
   const sendMessage = useStore((s) => s.sendMessage);
   const askCopilot = useStore((s) => s.askCopilot);
   const kickstartVotes = useStore((s) => s.kickstartVotes);
+  const merge = useStore((s) => s.merge);
+  const [merging, setMerging] = useState(false);
 
   const [rightOpen, setRightOpen] = useState(true);
   const [tab, setTab] = useState<"copilot" | "files">("copilot");
@@ -354,11 +420,20 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
   const pendingDiffs = diffs.filter((d) => d.threadId === id && d.status === "pending");
   const allDiffs = diffs.filter((d) => d.threadId === id);
   const tMembers = thread ? members.filter((m) => thread.memberIds.includes(m.id)) : [];
+  const tRuns = Object.values(runs).filter((r) => r.threadId === id);
+  const activeRun = tRuns.find((r) => !r.queued && ["queue", "plan", "write", "qa", "review"].includes(r.stage));
+  const queuedRuns = tRuns.filter((r) => r.queued);
   const openFile = (p: string) => {
     setTab("files");
     setFilePath(p);
     setRightOpen(true);
   };
+
+  // M3: merge gate state (threshold = majority of thread members, min 2)
+  const teamCount = tMembers.length;
+  const required = Math.max(2, Math.floor(teamCount / 2) + 1);
+  const mergeable = pendingDiffs.length === 0 && allDiffs.length > 0 && allDiffs.every((d) => d.status === "approved") && allDiffs.every((d) => d.evidence?.qa?.verdict === "pass");
+  const missingEvidence = allDiffs.some((d) => d.status === "approved" && d.evidence?.qa?.verdict !== "pass");
 
   useEffect(() => {
     kickstartVotes(id);
@@ -377,6 +452,12 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
       </div>
     );
   }
+
+  const doMerge = async () => {
+    setMerging(true);
+    await merge(id);
+    setMerging(false);
+  };
 
   const submit = () => {
     const text = draft.trim();
@@ -409,7 +490,7 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
         </div>
         <div className="flex items-center gap-2">
           <span className="hidden items-center gap-1.5 text-[10.5px] text-foreground/50 sm:flex">
-            <LiveDot /> live
+            <LiveDot /> {tMembers.filter((m) => m.online).length} online
           </span>
           <AvatarStack members={tMembers} />
           <Button variant={rightOpen ? "outline" : "ghost"} size="sm" onClick={() => setRightOpen(!rightOpen)} aria-label="Toggle copilot panel">
@@ -451,6 +532,26 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
 
         {/* center: feed */}
         <section className="flex min-w-0 flex-1 flex-col">
+          {activeRun && (
+            <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-agent/8 px-4 py-1.5">
+              <span className="flex items-center gap-2 text-[11px] text-agent">
+                <span className="pulse-dot relative h-2 w-2 rounded-full bg-agent" />
+                Agent run {activeRun.stage === "queue" ? "queued" : activeRun.stage.replace("_", " ")} — {activeRun.prompt.slice(0, 60)}
+              </span>
+              {queuedRuns.length > 0 && (
+                <span className="rounded-full bg-foreground/10 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wide text-foreground/55">
+                  {queuedRuns.length} queued
+                </span>
+              )}
+            </div>
+          )}
+          {tRuns.some((r) => r.notConfigured) && (
+            <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-warning/8 px-4 py-1.5">
+              <span className="flex items-center gap-1.5 text-[11px] text-warning">
+                <Bot size={13} /> Agent not configured — add an LLM key in Supabase Edge Function secrets to enable real runs.
+              </span>
+            </div>
+          )}
           {pendingDiffs.length > 0 && (
             <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-warning/8 px-4 py-1.5">
               <span className="text-[11px] text-warning">
@@ -459,6 +560,30 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
               <Button variant="primary" size="sm" onClick={() => pendingDiffs.forEach((d) => useStore.getState().vote(d.id, "approve"))}>
                 approve all
               </Button>
+            </div>
+          )}
+          {!pendingDiffs.length && mergeable && thread.status !== "shipped" && (
+            <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-success/8 px-4 py-1.5">
+              <span className="flex items-center gap-1.5 text-[11px] text-success">
+                <ShieldCheck size={13} /> Approval gate passed — evidence attached, threshold met.
+              </span>
+              <Button variant="primary" size="sm" onClick={() => void doMerge()} disabled={merging}>
+                {merging ? "Merging…" : "Merge to ship"}
+              </Button>
+            </div>
+          )}
+          {thread.status === "shipped" && allDiffs.length > 0 && (
+            <div className="flex items-center gap-2 border-b border-border/40 bg-success/8 px-4 py-1.5">
+              <span className="flex items-center gap-1.5 text-[11px] text-success">
+                <Check size={13} /> Shipped & merged — the approved diffs on this thread landed on the repo.
+              </span>
+            </div>
+          )}
+          {!pendingDiffs.length && allDiffs.length > 0 && !mergeable && thread.status === "review" && (
+            <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-foreground/5 px-4 py-1.5">
+              <span className="text-[11px] text-foreground/55">
+                {missingEvidence ? "Merge locked — evidence missing on an approved diff." : `Merge locked — needs ${required} approvals and evidence on every diff.`}
+              </span>
             </div>
           )}
           <div ref={feedRef} className="scroll-thin flex-1 overflow-y-auto px-4 py-4">
