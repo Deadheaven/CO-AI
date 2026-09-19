@@ -488,11 +488,13 @@ export const useStore = create<CoAIState>()(
       createThread: async (name, description) => {
         if (live) {
           const res = await createLiveThread({ name, description, memberId: get().meId });
-          if (res) {
-            await resyncLive();
-            return res.id;
+          if (!res) {
+            // Live inserts are RLS-gated server-side; surface a real failure
+            // instead of silently creating a local thread the team can never see.
+            throw new Error("We couldn't create that thread — try again.");
           }
-          // DB insert failed — fall through to the local path rather than losing the action
+          await resyncLive();
+          return res.id;
         }
         const id = uid();
         const code = name

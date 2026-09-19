@@ -38,6 +38,7 @@ export default function Home({
   const [desc, setDesc] = useState("");
   const [code, setCode] = useState("");
   const [joinError, setJoinError] = useState("");
+  const [createError, setCreateError] = useState("");
   const [meName, setMeName] = useState("");
   const [meColor, setMeColor] = useState(COLORS[0]);
 
@@ -47,11 +48,16 @@ export default function Home({
 
   const doCreate = async () => {
     if (!name.trim()) return;
-    const id = await createThread(name.trim(), desc.trim() || "A new line of work.");
-    setCreateOpen(false);
-    setName("");
-    setDesc("");
-    onOpen(id);
+    setCreateError("");
+    try {
+      const id = await createThread(name.trim(), desc.trim() || "A new line of work.");
+      setCreateOpen(false);
+      setName("");
+      setDesc("");
+      onOpen(id);
+    } catch {
+      setCreateError("We couldn't create that thread — try again.");
+    }
   };
 
   const doJoin = async () => {
@@ -286,6 +292,7 @@ export default function Home({
           <Field label="Why it matters / description" htmlFor="thread-desc">
             <textarea id="thread-desc" rows={3} className={cn(inputCls, "h-auto resize-none py-2")} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Context your team and the agent will see." />
           </Field>
+          {createError && <p className="text-[11px] text-destructive">{createError}</p>}
           <Button variant="primary" onClick={doCreate}>Create thread</Button>
         </div>
       </Modal>

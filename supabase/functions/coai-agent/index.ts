@@ -9,9 +9,15 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  *   200 { ok: true, runId }
  *   200 { ok: false, reason: "agent-not-configured" | "already-running" | "bad-request" | "llm-error" }
  *
- * The function is provider-agnostic: it reads LLM_API_KEY (OpenAI or Gemini —
- * key format decides) and LLM_MODEL (optional override). It produces a strict
- * JSON result (plan → steps → diffs → self-QA) and persists each artifact to
+ * The function is provider-agnostic: it reads NVIDIA_API_KEY (Nemotron) or
+ * LLM_API_KEY (OpenAI / Gemini — key format decides) and LLM_MODEL (optional
+ * override). NVIDIA models are resolved adaptively: the function fetches the
+ * live NIM model catalog with the shared key, picks the best instruction-tuned
+ * chat model (nemotron → llama → qwen → …), and retries alternates when one
+ * responds 404/410 — so a retired EOL id (like
+ * nvidia/llama-3.3-nemotron-super-49b-v1, EOL 2026-08) can never wedge a run.
+ * It produces a strict JSON result (plan →
+ * steps → diffs → self-QA) and persists each artifact to
  * Postgres. Supabase Realtime then broadcasts the rows to every member's
  * thread — no separate push channel needed.
  *
@@ -19,7 +25,8 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  * persisted in `pending` state and cannot be merged by this or any other
  * function until evidence + threshold checks pass.
  *
- * Secrets: LLM_API_KEY (required for real mode), SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+ * Secrets: NVIDIA_API_KEY or LLM_API_KEY (required for real mode),
+ * SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
  * (auto-injected). Never in client code.
  */
 
@@ -64,13 +71,13 @@ Deno.serve(async (req: Request) => {
   const { threadId, runId, prompt, trigger } = body;
   if (!threadId || !runId || !prompt) return json({ ok: false, reason: "bad-request", message: "threadId, runId, prompt required" });
 
-  const key = Deno.env.get("LLM_API_KEY");
+  const key = Deno.env.get("NVIDIA_API_KEY") ?? Deno.env.get("LLM_API_KEY");
   if (!key) {
     // Graceful "agent not configured": mark the run + thread and stop.
     await sb.from("agent_runs").update({ not_configured: true, state: "blocked" }).eq("id", runId);
     await sb.from("messages").insert({
       thread_id: threadId, author_id: "agent", kind: "agent",
-      body: "Agent not configured — add an LLM key (LLM_API_KEY) in Supabase Edge Function secrets to enable real runs.",
+      body: "Agent not configured — add an NVIDIA (Nemotron) API key (NVIDIA_API_KEY) in Supabase Edge Function secrets to enable real runs.",
       run_id: runId, meta: "blocked", ts: Date.now(),
     });
     return json({ ok: false, reason: "agent-not-configured" });
@@ -94,8 +101,21 @@ Deno.serve(async (req: Request) => {
     return json({ ok: true, runId, queued: true });
   }
 
-  const keyName = key.startsWith("sk-") ? "openai" : key.includes(":") ? "gemini" : "openai";
-  const model = Deno.env.get("LLM_MODEL") ?? (keyName === "gemini" ? "gemini-2.0-flash" : "gpt-4o-mini");
+  const keyName = key.startsWith("nvapi-") ? "nvidia" : key.startsWith("sk-") ? "openai" : key.includes(":") ? "gemini" : "openai";
+  // Model resolution: an explicit LLM_MODEL wins; otherwise NVIDIA adapts to
+  // the live catalog (pick-nvidia-models, memoized) with retry alternates so a
+  // hardcoded EOL model can never block a run again (the original 410 bug).
+  const llmOverride = Deno.env.get("LLM_MODEL");
+  let model = llmOverride ?? "";
+  let alternates: string[] = [];
+  if (!model) {
+    if (keyName === "gemini") model = "gemini-2.0-flash";
+    else if (keyName === "nvidia") {
+      const picked = await pickNvidiaModel(key);
+      model = picked.model;
+      alternates = picked.alternates;
+    } else model = "gpt-4o-mini";
+  }
 
   const repoFiles = await fetchThreadFiles(sb, threadId);
 
@@ -190,7 +210,7 @@ interface LlmResult {
 
 /** One structured LLM call producing plan/steps/diffs/qa in strict JSON. */
 async function callLlm(opts: {
-  key: string; provider: string; model: string; prompt: string; repoFiles: string;
+  key: string; provider: string; model: string; prompt: string; repoFiles: string; alternates?: string[];
 }): Promise<LlmResult> {
   const sys = [
     "You are the CO-AI engineering agent working on a team thread.",
@@ -282,6 +302,39 @@ async function callLlm(opts: {
     return parseResult(text);
   }
 
+  // NVIDIA NIM (OpenAI-compatible). Model ids change over time (EOL 410s), so
+  // we walk a small candidate chain — the catalog pick first, any alternates
+  // next — and treat only real model-not-found statuses as retryable.
+  if (opts.provider === "nvidia") {
+    const candidates = [opts.model, ...(opts.alternates ?? [])];
+    let lastErr = "nvidia: no usable model";
+    for (const m of candidates) {
+      const res = await fetch(`${NVIDIA_API}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.key}` },
+        body: JSON.stringify({
+          model: m,
+          messages: [{ role: "system", content: sys }, { role: "user", content: user }],
+          temperature: 0.2,
+          max_tokens: 4096,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const text: string = data?.choices?.[0]?.message?.content ?? "";
+        const parsed = parseResult(text);
+        if (parsed.ok) return parsed;
+        lastErr = parsed.error ?? "llm returned non-JSON";
+        continue; // noisy output / wrong shape on this model → try the next
+      }
+      const status = res.status;
+      const detail = (await res.text()).slice(0, 200);
+      lastErr = `nvidia ${status}: ${detail}`;
+      if (status !== 404 && status !== 410) return { ok: false, error: lastErr, steps: [] };
+    }
+    return { ok: false, error: lastErr, steps: [] };
+  }
+
   // OpenAI-compatible
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -303,14 +356,106 @@ async function callLlm(opts: {
 }
 
 function parseResult(text: string): LlmResult {
+  const cleaned = text.replace(/^```json\s*/i, "").replace(/```$/s, "").trim();
+  const valid = (p: unknown): p is LlmResult => {
+    const r = p as LlmResult;
+    return !!r && Array.isArray(r.steps) && Array.isArray(r.diffs);
+  };
+  const accept = (raw: unknown) => {
+    if (!valid(raw)) return null;
+    const r = raw as LlmResult;
+    return { ok: true as const, plan: r.plan, steps: r.steps, diffs: r.diffs };
+  };
   try {
-    const cleaned = text.replace(/^```json\s*/i, "").replace(/```$/s, "").trim();
-    const parsed = JSON.parse(cleaned) as LlmResult;
-    if (!Array.isArray(parsed.steps) || !Array.isArray(parsed.diffs)) {
-      return { ok: false, error: "llm returned invalid shape", steps: [], diffs: [] };
-    }
-    return { ok: true, plan: parsed.plan, steps: parsed.steps, diffs: parsed.diffs };
+    const direct = accept(JSON.parse(cleaned));
+    if (direct) return direct;
+    return { ok: false, error: "llm returned invalid shape", steps: [], diffs: [] };
   } catch {
-    return { ok: false, error: "llm returned non-JSON", steps: [], diffs: [] };
+    // fall through — the model may have wrapped the JSON in fences or CoT text
   }
+  // Last (outer/fenced) JSON block wins — covers chain-of-thought outputs.
+  const fences = [...cleaned.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)];
+  for (let i = fences.length - 1; i >= 0; i--) {
+    try {
+      const hit = accept(JSON.parse(fences[i]![1]!.trim()));
+      if (hit) return hit;
+    } catch {
+      /* keep scanning */
+    }
+  }
+  const first = cleaned.indexOf("{");
+  const last = cleaned.lastIndexOf("}");
+  if (first !== -1 && last > first) {
+    try {
+      const hit = accept(JSON.parse(cleaned.slice(first, last + 1)));
+      if (hit) return hit;
+    } catch {
+      /* give up */
+    }
+  }
+  return { ok: false, error: "llm returned non-JSON", steps: [], diffs: [] };
+}
+
+/* ---------------- NVIDIA catalog-driven model selection ---------------- */
+
+const NVIDIA_API = "https://integrate.api.nvidia.com/v1";
+/** Catalog ids that are obviously not chat/instruct models. */
+const NVIDIA_SKIP =
+  /(embedding|rerank|re-rank|whisper|tts|asr|stt|audio|speech|vision|image|ocr|paint|canvas|video|segmentation|upscale|scoring|retrieval|guardrail|gec|sdxl|flux|bria|kosmos|jina|nim-embed)/i;
+/** Preference order over catalog ids — earlier matches win. */
+const NVIDIA_PREFERENCE: RegExp[] = [
+  /nemotron[\w.-]*(?:super|70b|49b)?/i,
+  /llama-3\.3[\w.-]*instruct/i,
+  /llama-3\.1[\w.-]*(?:instruct|nemotron)/i,
+  /llama-3\.\d+[\w.-]*instruct/i,
+  /qwen3?[\w.-]*(?:instruct|-?it\d*)?/i,
+  /gemma-3[\w.-]*/i,
+  /mistral[\w.-]*instruct/i,
+  /deepseek[\w.-]*/i,
+];
+/** Static chain used only when the catalog call itself fails. */
+const NVIDIA_FALLBACK_CHAIN = [
+  "nvidia/llama-3.1-nemotron-70b-instruct",
+  "meta/llama-3.3-70b-instruct",
+  "qwen/qwen3-32b",
+  "google/gemma-3-27b-it",
+  "meta/llama-3.1-8b-instruct",
+];
+
+let nvidiaCatalogCache: { key: string; picked: { model: string; alternates: string[] } } | null = null;
+
+/** Query the live NIM catalog (memoized per process) and pick the best
+ *  instruction-tuned chat model plus a couple of retry alternates. Falls back
+ *  to a conservative chain if the catalog call itself fails. */
+async function pickNvidiaModel(key: string): Promise<{ model: string; alternates: string[] }> {
+  if (nvidiaCatalogCache?.key === key) return nvidiaCatalogCache.picked;
+  let ids: string[] = [];
+  try {
+    const res = await fetch(`${NVIDIA_API}/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { data?: { id?: string }[] };
+      ids = (data?.data ?? []).map((m) => m.id ?? "").filter(Boolean);
+    }
+  } catch {
+    ids = [];
+  }
+  const liveIds = ids.filter((id) => !NVIDIA_SKIP.test(id));
+  const tierOf = (id: string): number => {
+    for (let i = 0; i < NVIDIA_PREFERENCE.length; i++) if (NVIDIA_PREFERENCE[i].test(id)) return i;
+    return 99;
+  };
+  const ranked = [...liveIds].sort((a, b) => tierOf(a) - tierOf(b) || a.length - b.length);
+  const chain = ranked.length ? ranked : NVIDIA_FALLBACK_CHAIN;
+  const alternates: string[] = [];
+  for (const id of chain) {
+    if (id === chain[0]) continue;
+    if (alternates.length >= 3) break;
+    if (!alternates.includes(id)) alternates.push(id);
+  }
+  const picked = { model: chain[0] ?? NVIDIA_FALLBACK_CHAIN[0]!, alternates };
+  nvidiaCatalogCache = { key, picked };
+  return picked;
 }

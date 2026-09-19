@@ -64,7 +64,7 @@ function StatusRail({ status }: { status: ThreadStatus }) {
       </div>
       {status === "blocked" && (
         <p className="mt-2 rounded-lg bg-destructive/10 px-2 py-1.5 text-[10.5px] text-destructive">
-          Blocked — a diff was rejected. Respond in the thread, then kick off a new run.
+          Blocked — the last agent run needs attention. Message the team, then kick off a new run.
         </p>
       )}
     </div>
@@ -420,9 +420,17 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
   const pendingDiffs = diffs.filter((d) => d.threadId === id && d.status === "pending");
   const allDiffs = diffs.filter((d) => d.threadId === id);
   const tMembers = thread ? members.filter((m) => thread.memberIds.includes(m.id)) : [];
+  // The reader is always present on the thread they're viewing — count them
+  // even when this session's member row isn't in thread.memberIds yet (a
+  // share-code thread created by another device used to show "0 online").
+  const viewer = members.find((m) => m.id === meId);
   const tRuns = Object.values(runs).filter((r) => r.threadId === id);
   const activeRun = tRuns.find((r) => !r.queued && ["queue", "plan", "write", "qa", "review"].includes(r.stage));
   const queuedRuns = tRuns.filter((r) => r.queued);
+  // Only the MOST RECENT run decides the "agent not configured" banner — a
+  // stale failed run must not keep claiming the agent is unconfigured after a
+  // newer run succeeded (the misleading banner QA caught on KICK-90).
+  const latestRun = [...tRuns].sort((a, b) => b.startedAt - a.startedAt)[0];
   const openFile = (p: string) => {
     setTab("files");
     setFilePath(p);
@@ -490,7 +498,8 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
         </div>
         <div className="flex items-center gap-2">
           <span className="hidden items-center gap-1.5 text-[10.5px] text-foreground/50 sm:flex">
-            <LiveDot /> {tMembers.filter((m) => m.online).length} online
+            <LiveDot />{" "}
+            {tMembers.filter((m) => m.online).length + (viewer?.online && !tMembers.some((m) => m.id === meId) ? 1 : 0)} online
           </span>
           <AvatarStack members={tMembers} />
           <Button variant={rightOpen ? "outline" : "ghost"} size="sm" onClick={() => setRightOpen(!rightOpen)} aria-label="Toggle copilot panel">
@@ -545,7 +554,7 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
               )}
             </div>
           )}
-          {tRuns.some((r) => r.notConfigured) && (
+          {latestRun?.notConfigured && (
             <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-warning/8 px-4 py-1.5">
               <span className="flex items-center gap-1.5 text-[11px] text-warning">
                 <Bot size={13} /> Agent not configured — add an LLM key in Supabase Edge Function secrets to enable real runs.

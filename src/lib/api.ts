@@ -123,6 +123,23 @@ export function runFromRow(r: Row): AgentRun {
 }
 
 /**
+ * Single-flight wrapper for bootBackendOnce. Dev StrictMode mounts run
+ * initStore() twice back-to-back; without this, two concurrent
+ * signInAnonymously() calls race — the session is replaced mid-boot and the
+ * loser's inserts 403 on RLS (auth.uid() no longer matches). All callers (the
+ * two StrictMode effects, resyncLive) share ONE boot attempt and one identity.
+ */
+let bootInFlight: ReturnType<typeof bootBackendOnce> | null = null;
+export function bootBackend(): ReturnType<typeof bootBackendOnce> {
+  if (!bootInFlight) {
+    bootInFlight = bootBackendOnce().finally(() => {
+      bootInFlight = null;
+    });
+  }
+  return bootInFlight;
+}
+
+/**
  * Boot the live backend:
  * 1. anonymous sign-in (auto-creates a member row with display name + color)
  * 2. ensure the single v1 workspace exists
@@ -131,7 +148,7 @@ export function runFromRow(r: Row): AgentRun {
  *
  * Returns { ok: false, reason } when unconfigured / boot fails → DEMO_MODE.
  */
-export async function bootBackend(): Promise<{ ok: true; snapshot: Snapshot } | { ok: false; reason: string }> {
+async function bootBackendOnce(): Promise<{ ok: true; snapshot: Snapshot } | { ok: false; reason: string }> {
   const sb = getSupabase();
   if (!sb) return { ok: false, reason: "supabase env vars not configured" };
 
@@ -275,25 +292,25 @@ export async function bootBackend(): Promise<{ ok: true; snapshot: Snapshot } | 
     }
 
     return {
-      ok: true,
-      snapshot: {
-        meId: me.id,
-        me,
-        members: [...membersById.values()],
-        presence: presenceMap,
-        threads,
-        messages,
-        steps,
-        files,
-        diffs,
-        runs,
-      },
-    };
-  } catch (e) {
-    console.warn("[co-ai] snapshot failed:", e);
-    return { ok: false, reason: "snapshot-fetch-failed" };
+        ok: true,
+        snapshot: {
+          meId: me.id,
+          me,
+          members: [...membersById.values()],
+          presence: presenceMap,
+          threads,
+          messages,
+          steps,
+          files,
+          diffs,
+          runs,
+        },
+      };
+    } catch (e) {
+      console.warn("[co-ai] snapshot failed:", e);
+      return { ok: false, reason: "snapshot-fetch-failed" };
+    }
   }
-}
 
 /* ---------- write helpers (fire-and-forget; RLS enforces scope) ---------- */
 
@@ -355,14 +372,15 @@ export async function createLiveThread(payload: {
   return { id: threadId, code };
 }
 
-export async function joinLiveThread(code: string, memberId: string): Promise<string | null> {
+export async function joinLiveThread(code: string, _memberId: string): Promise<string | null> {
+  // A joiner is NOT a thread member yet, so the thread rows are unreadable to
+  // them under RLS — a plain select-by-code returns nothing. Resolution and
+  // membership insert happen server-side in join_thread_by_code (definer).
   const sb = getSupabase();
   if (!sb) return null;
-  const { data: rows } = await sb.from("threads").select("id").eq("share_code", code.toUpperCase()).limit(1);
-  const threadId = (rows as Row[] | null)?.[0]?.id as string | undefined;
-  if (!threadId) return null;
-  await sb.from("thread_members").insert({ thread_id: threadId, member_id: memberId });
-  return threadId;
+  const { data, error } = await sb.rpc("join_thread_by_code", { p_code: code.toUpperCase() });
+  if (error || !data) return null;
+  return String(data);
 }
 
 export async function persistMessage(msg: ChatMsg): Promise<boolean> {
