@@ -1,6 +1,7 @@
 import { getSupabase } from "./supabase";
 import type {
   AgentRun,
+  ApprovalPolicy,
   ChatMsg,
   Diff,
   Member,
@@ -11,7 +12,9 @@ import type {
   Thread,
   ThreadStatus,
   Vote,
+  WorkspaceSettings,
 } from "../types";
+import { DEFAULT_POLICY } from "../types";
 
 /**
  * Data layer over Supabase. Every function here is RLS-gated: an anonymous
@@ -33,6 +36,7 @@ export interface Snapshot {
   files: Record<string, RepoFile[]>;
   diffs: Diff[];
   runs: Record<string, AgentRun>;
+  workspace: WorkspaceSettings | null;
 }
 
 type Row = Record<string, unknown>;
@@ -202,7 +206,7 @@ async function bootBackendOnce(): Promise<{ ok: true; snapshot: Snapshot } | { o
 
   // 3. snapshot --------------------------------------------------------------
   try {
-    const [membersRes, tmsRes, threadsRes, msgsRes, stepsRes, filesRes, diffsRes, runsRes, approvalsRes, presenceRes] =
+    const [membersRes, tmsRes, threadsRes, msgsRes, stepsRes, filesRes, diffsRes, runsRes, approvalsRes, presenceRes, wsDetailRes] =
       await Promise.all([
         sb.from("members").select("*"),
         sb.from("thread_members").select("thread_id,member_id"),
@@ -214,6 +218,7 @@ async function bootBackendOnce(): Promise<{ ok: true; snapshot: Snapshot } | { o
         sb.from("agent_runs").select("*"),
         sb.from("approvals").select("diff_id,member_id,verdict"),
         sb.from("presence").select("*"),
+        sb.from("workspaces").select("id,approval_threshold,repo_owner,repo_name,base_branch").limit(1).maybeSingle(),
       ]);
 
     const threadRows = (threadsRes.data as Row[] | null) ?? [];
@@ -240,6 +245,8 @@ async function bootBackendOnce(): Promise<{ ok: true; snapshot: Snapshot } | { o
     });
     const me = membersById.get(userId) ?? memberFromRow(meRow);
     me.online = true;
+
+    const workspace: WorkspaceSettings | null = wsDetailRes.data ? workspaceFromRow(wsDetailRes.data as Row) : null;
 
     const threadMap = new Map<string, string[]>();
     tmRows.forEach((tm) => {
@@ -295,6 +302,7 @@ async function bootBackendOnce(): Promise<{ ok: true; snapshot: Snapshot } | { o
         ok: true,
         snapshot: {
           meId: me.id,
+          workspace,
           me,
           members: [...membersById.values()],
           presence: presenceMap,
@@ -461,6 +469,67 @@ export function makeCode(name: string): string {
 }
 
 export const isDemo = !getSupabase();
+
+/* ---------- M3: workspace settings (approval threshold + GitHub repo) ---------- */
+
+export function workspaceFromRow(r: Row): WorkspaceSettings {
+  return {
+    id: String(r.id),
+    approvalThreshold: ((r.approval_threshold as ApprovalPolicy | null) ?? DEFAULT_POLICY),
+    repo: r.repo_owner
+      ? {
+          owner: String(r.repo_owner),
+          name: String(r.repo_name ?? ""),
+          baseBranch: String(r.base_branch ?? "main"),
+        }
+      : null,
+  };
+}
+
+/** Persist threshold + connected-repo settings to the workspace row (M3 #6, CO-11 UI). */
+export async function updateWorkspaceSettings(
+  wsId: string,
+  patch: {
+    approvalThreshold?: ApprovalPolicy;
+    repoOwner?: string | null;
+    repoName?: string | null;
+    baseBranch?: string | null;
+  }
+): Promise<boolean> {
+  const sb = getSupabase();
+  if (!sb) return false;
+  const payload: Row = {};
+  if (patch.approvalThreshold) payload.approval_threshold = patch.approvalThreshold;
+  if (patch.repoOwner !== undefined) payload.repo_owner = patch.repoOwner || null;
+  if (patch.repoName !== undefined) payload.repo_name = patch.repoName || null;
+  if (patch.baseBranch !== undefined) payload.base_branch = patch.baseBranch || "main";
+  const { error } = await sb.from("workspaces").update(payload).eq("id", wsId);
+  return !error;
+}
+
+export interface GhTestResult {
+  ok: boolean;
+  fullName?: string;
+  defaultBranch?: string;
+  reason?: string;
+  message?: string;
+}
+
+/** Verify a GitHub repo connection via the coai-gh "test" action (never calls GitHub directly). */
+export async function invokeGhTest(repo?: string): Promise<GhTestResult> {
+  const sb = getSupabase();
+  if (!sb) return { ok: false, reason: "not-configured", message: "Supabase is not configured." };
+  try {
+    const { data, error } = await sb.functions.invoke("coai-gh", {
+      body: repo ? { action: "test", repo } : { action: "test" },
+    });
+    if (error) return { ok: false, reason: error.message, message: error.message };
+    return (data as GhTestResult) ?? { ok: true };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, reason: "github-error", message: msg };
+  }
+}
 
 /* ---------- presence (M1 realtime team layer) ---------- */
 

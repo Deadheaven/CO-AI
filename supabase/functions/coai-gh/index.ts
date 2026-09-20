@@ -4,17 +4,25 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 /**
  * coai-gh — M3 GitHub connector (production merge path).
  *
+ * v4: the connected repo (owner/repo + base branch) is resolved from the
+ * workspace row (set via Home → Settings → Connect repository), with env
+ * fallback for deployments that predate the settings UI. Added the `test`
+ * action so the UI can verify a connection and report a 401 as a
+ * "repo connection needs repair" CTA instead of a cryptic error.
+ *
  * Contract:
- *   POST { threadId: string, action: "create-pr" | "merge" }
- *   200 { ok: true, prNumber?, branch?, merged? }
- *   200 { ok: false, reason: "gate-locked" | "not-configured" | "bad-request" | "github-error" }
+ *   POST { threadId?: string, action: "create-pr" | "merge" | "test", repo?: "owner/name" }
+ *   200 { ok: true, prNumber?, branch?, merged?, fullName?, defaultBranch? }
+ *   200 { ok: false, reason: "gate-locked" | "not-configured" | "auth-error" |
+ *                             "bad-request" | "github-error", message? }
  *
- * The approval gate is checked SERVER-SIDE (migration 0004 helper
- * `thread_can_merge`) with the service-role key — the client cannot bypass it.
- * For demo mode (no GITHUB_PAT / no repo), the frontend merges in-place.
+ * The approval gate is re-checked SERVER-SIDE (migration 0004 helper
+ * `thread_can_merge`) with the service-role key — the client can never bypass
+ * it. For demo mode (no GITHUB_PAT / no repo) the frontend merges in-place.
  *
- * Secrets: GITHUB_PAT (fine-grained, contents:write + pull_requests:write on
- * the connected repo), SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (auto).
+ * Secrets: GITHUB_PAT (fine-grained: contents:write + pull_requests:write on
+ * the connected repo). GITHUB_REPO / GITHUB_BASE_BRANCH are optional env
+ * fallbacks. SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are injected.
  */
 
 const cors = {
@@ -47,20 +55,74 @@ Deno.serve(async (req: Request) => {
     if (authErr) return json({ ok: false, reason: "bad-request", message: "invalid token" });
   }
 
-  let body: { threadId?: string; action?: string };
+  let body: { threadId?: string; action?: string; repo?: string };
   try {
     body = await req.json();
   } catch {
     return json({ ok: false, reason: "bad-request", message: "invalid json" });
   }
-  const { threadId, action } = body;
-  if (!threadId || !action) return json({ ok: false, reason: "bad-request", message: "threadId, action required" });
+  const { threadId, action } = body ?? {};
+  if (!action) return json({ ok: false, reason: "bad-request", message: "action required" });
 
-  const pat = Deno.env.get("GITHUB_PAT");
-  const repo = Deno.env.get("GITHUB_REPO"); // e.g. "owner/repo"
+  const pat = Deno.env.get("GITHUB_PAT") ?? "";
+
+  // ---- resolve the connected repo: workspace row first, env fallback -------
+  const workspace = (
+    await sb.from("workspaces").select("repo_owner,repo_name,base_branch").limit(1).maybeSingle()
+  ).data as { repo_owner: string | null; repo_name: string | null; base_branch: string | null } | null;
+  const wsRepo =
+    workspace?.repo_owner && workspace?.repo_name
+      ? `${workspace.repo_owner}/${workspace.repo_name}`
+      : null;
+  const repo = wsRepo ?? Deno.env.get("GITHUB_REPO") ?? "";
+  const base = workspace?.base_branch || Deno.env.get("GITHUB_BASE_BRANCH") || "main";
+
   if (!pat || !repo) {
-    return json({ ok: false, reason: "not-configured", message: "GITHUB_PAT / GITHUB_REPO not set — demo mode merges in place." });
+    return json({
+      ok: false,
+      reason: "not-configured",
+      message: "Add a GITHUB_PAT secret and connect a repository in Settings — merges stay locked until then.",
+    });
   }
+
+  const gh = (path: string, init?: RequestInit) =>
+    fetch(`https://api.github.com${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${pat}`,
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...(init?.headers ?? {}),
+      },
+    });
+
+  // ---- test connection (Home → Settings → Connect repository) -------------
+  if (action === "test") {
+    const testRepo = (body?.repo && body.repo.includes("/") ? body.repo : repo).replace(/^\/+|\/+$/g, "");
+    try {
+      const r = await gh(`/repos/${testRepo}`);
+      if (r.ok) {
+        const info = (await r.json()) as { full_name: string; default_branch: string };
+        return json({ ok: true, fullName: info.full_name, defaultBranch: info.default_branch });
+      }
+      if (r.status === 401 || r.status === 403) {
+        return json({
+          ok: false,
+          reason: "auth-error",
+          message: "invalid token or missing scopes — repo connection needs repair",
+        });
+      }
+      if (r.status === 404) {
+        return json({ ok: false, reason: "github-error", message: `Repo ${testRepo} not found, or no read access.` });
+      }
+      return json({ ok: false, reason: "github-error", message: `GitHub responded ${r.status}.` });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return json({ ok: false, reason: "github-error", message: msg.slice(0, 300) });
+    }
+  }
+
+  if (!threadId) return json({ ok: false, reason: "bad-request", message: "threadId required" });
 
   // ---- structural gate (server-side, cannot be bypassed) -----------------
   const { data: canMerge } = await sb.rpc("thread_can_merge", { p_thread: threadId });
@@ -76,19 +138,7 @@ Deno.serve(async (req: Request) => {
     | null) ?? [];
   if (!thread || diffs.length === 0) return json({ ok: false, reason: "bad-request", message: "no unmerged diffs" });
 
-  const gh = (path: string, init?: RequestInit) =>
-    fetch(`https://api.github.com${path}`, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${pat}`,
-        "Content-Type": "application/json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        ...(init?.headers ?? {}),
-      },
-    });
-
   const branch = `co-ai/${thread.share_code.toLowerCase().replace(/\s+/g, "-")}-${Date.now().toString(36)}`;
-  const base = Deno.env.get("GITHUB_BASE_BRANCH") ?? "main";
 
   try {
     if (action === "create-pr") {

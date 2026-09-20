@@ -117,6 +117,15 @@ export interface Thread {
   ts: number;
 }
 
+/** Workspace-level settings (M3 #6 + GitHub connector). Single shared row per team. */
+export interface WorkspaceSettings {
+  id: string;
+  /** Approval policy from workspaces.approval_threshold (default majority min 2). */
+  approvalThreshold: ApprovalPolicy;
+  /** Connected GitHub repo, or null when not connected (demo merges in place). */
+  repo: { owner: string; name: string; baseBranch: string } | null;
+}
+
 export type RunStage = "queue" | "plan" | "write" | "qa" | "review" | "done" | "blocked";
 
 export interface AgentRun {

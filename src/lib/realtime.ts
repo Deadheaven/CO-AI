@@ -29,7 +29,7 @@ export interface RealtimeEvent {
   row: RealtimeRow;
 }
 
-const LIVE_TABLES = ["presence", "members", "messages", "steps", "diffs", "agent_runs", "threads"] as const;
+const LIVE_TABLES = ["presence", "members", "messages", "steps", "diffs", "agent_runs", "threads", "workspaces"] as const;
 
 const BEAT_MS = 25_000; // presence heartbeat
 const SWEEP_MS = 20_000; // re-read presence (crash detection + missed events)
