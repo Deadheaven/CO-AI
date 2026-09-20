@@ -50,10 +50,9 @@ Deno.serve(async (req: Request) => {
   const sb = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
   const token = authHeader.replace(/^Bearer\s+/i, "");
-  if (token) {
-    const { error: authErr } = await sb.auth.getUser(token);
-    if (authErr) return json({ ok: false, reason: "bad-request", message: "invalid token" });
-  }
+  if (!token) return json({ ok: false, reason: "unauthorized", message: "authorization required" }, 401);
+  const { data: authData, error: authErr } = await sb.auth.getUser(token);
+  if (authErr || !authData.user) return json({ ok: false, reason: "unauthorized", message: "invalid token" }, 401);
 
   let body: { threadId?: string; action?: string; repo?: string };
   try {
@@ -123,6 +122,14 @@ Deno.serve(async (req: Request) => {
   }
 
   if (!threadId) return json({ ok: false, reason: "bad-request", message: "threadId required" });
+
+  const { data: membership } = await sb
+    .from("thread_members")
+    .select("thread_id")
+    .eq("thread_id", threadId)
+    .eq("member_id", authData.user.id)
+    .maybeSingle();
+  if (!membership) return json({ ok: false, reason: "forbidden", message: "not a thread member" }, 403);
 
   // ---- structural gate (server-side, cannot be bypassed) -----------------
   const { data: canMerge } = await sb.rpc("thread_can_merge", { p_thread: threadId });

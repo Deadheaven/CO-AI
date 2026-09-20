@@ -57,10 +57,9 @@ Deno.serve(async (req: Request) => {
   // Verify the caller's JWT (members only; RLS would do this for the anon key,
   // but this function writes with the service role, so we authenticate manually).
   const token = authHeader.replace(/^Bearer\s+/i, "");
-  if (token) {
-    const { error: authErr } = await sb.auth.getUser(token);
-    if (authErr) return json({ ok: false, reason: "bad-request", message: "invalid token" });
-  }
+  if (!token) return json({ ok: false, reason: "unauthorized", message: "authorization required" }, 401);
+  const { data: authData, error: authErr } = await sb.auth.getUser(token);
+  if (authErr || !authData.user) return json({ ok: false, reason: "unauthorized", message: "invalid token" }, 401);
 
   let body: { threadId?: string; runId?: string; prompt?: string; trigger?: string };
   try {
@@ -70,6 +69,20 @@ Deno.serve(async (req: Request) => {
   }
   const { threadId, runId, prompt, trigger } = body;
   if (!threadId || !runId || !prompt) return json({ ok: false, reason: "bad-request", message: "threadId, runId, prompt required" });
+
+  // Service-role writes bypass RLS, so establish both the caller's membership
+  // and the run/thread binding before doing any work.
+  const { data: membership } = await sb
+    .from("thread_members")
+    .select("thread_id")
+    .eq("thread_id", threadId)
+    .eq("member_id", authData.user.id)
+    .maybeSingle();
+  if (!membership) return json({ ok: false, reason: "forbidden", message: "not a thread member" }, 403);
+  const { data: runRow } = await sb.from("agent_runs").select("id,thread_id").eq("id", runId).maybeSingle();
+  if (!runRow || runRow.thread_id !== threadId) {
+    return json({ ok: false, reason: "bad-request", message: "run does not belong to thread" });
+  }
 
   const key = Deno.env.get("NVIDIA_API_KEY") ?? Deno.env.get("LLM_API_KEY");
   if (!key) {
@@ -124,7 +137,7 @@ Deno.serve(async (req: Request) => {
     await setStage(sb, runId, "plan");
     await pushMessage(sb, threadId, runId, "plan", "Planning the work against the harness repo…");
 
-    const result = await callLlm({ key, provider: keyName, model, prompt, repoFiles });
+    const result = await callLlm({ key, provider: keyName, model, prompt, repoFiles, alternates });
     if (!result.ok) throw new Error(result.error);
 
     // steps + plan message
@@ -143,7 +156,11 @@ Deno.serve(async (req: Request) => {
       await sb.from("diffs").insert({
         id: diffId, thread_id: threadId, run_id: runId, path: d.path, label: d.label,
         before: d.before ?? "", after: d.after ?? "", status: "pending", votes: {},
-        evidence: d.evidence ?? { qa: { summary: "", verdict: "pass", checks: [] } },
+        // This function asks a model for a review card but does not execute
+        // commands. It must remain unverified until the sandbox worker writes
+        // executor evidence for this exact revision.
+        evidence: d.evidence ?? { qa: { summary: "No executor evidence recorded.", verdict: "fail", checks: [] } },
+        evidence_source: "unverified",
         ts: Date.now(),
       });
       await pushMessage(sb, threadId, runId, "diff", d.label, diffId);
@@ -220,8 +237,8 @@ async function callLlm(opts: {
     "- Plan is 2-4 sentences. Steps are 3-6 actionable checklist items.",
     "- diffs are code changes against the repo files below. before = the exact original file content you are changing (full file), after = the full edited file.",
     "- If a diff cannot be produced safely (missing context), emit a diff with after === before and a QA verdict of 'fail'.",
-    "- Each diff MUST include evidence: a self-QA report with a verdict and checks. Include tests evidence with a plausible command + output when the repo has tests.",
-    "- Be honest: never claim tests pass that you did not reason about.",
+    "- QA is a static review only. Do NOT invent command output, test results, or claim that tests passed.",
+    "- Omit tests unless supplied by an external executor. CO-AI will attach execution evidence separately.",
   ].join("\n");
   const user = `Thread prompt: ${opts.prompt}\n\nHarness repo files:\n${opts.repoFiles}`;
 

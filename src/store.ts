@@ -390,7 +390,7 @@ export const useStore = create<CoAIState>()(
         set((s) => ({
           diffs: s.diffs.map((d) => (d.id === diffId ? { ...d, votes, status, comment: comment ?? d.comment } : d)),
         }));
-        if (live) void voteOnDiff(diffId, st.meId, verdict);
+        if (live) void voteOnDiff(diffId, verdict);
         const thread = st.threads.find((t) => t.id === diff.threadId);
         if (verdict === "reject" && thread) {
           const rejectMsg = mkMsg(thread.id, st.meId, "chat", comment ? `Rejected: ${comment}` : "Rejected — let's rework this diff.");
@@ -845,6 +845,16 @@ function applyRealtimeEvent(ev: RealtimeEvent): void {
       } else {
         useStore.setState({ diffs: upsertById(st.diffs, diffFromRow(row)) });
       }
+      break;
+    }
+    case "approvals": {
+      const diffId = String(row.diff_id ?? "");
+      const memberId = String(row.member_id ?? "");
+      const verdict = row.verdict === "approve" || row.verdict === "reject" ? row.verdict : null;
+      if (!diffId || !memberId || !verdict) break;
+      useStore.setState({
+        diffs: st.diffs.map((d) => d.id === diffId ? { ...d, votes: { ...d.votes, [memberId]: verdict } } : d),
+      });
       break;
     }
     case "agent_runs": {

@@ -104,6 +104,9 @@ export function diffFromRow(r: Row): Diff {
   };
   if (r.comment != null) d.comment = String(r.comment);
   if (r.evidence != null) d.evidence = r.evidence as Diff["evidence"];
+  if (r.evidence_source === "executor" || r.evidence_source === "unverified") {
+    d.evidenceSource = r.evidence_source;
+  }
   if (r.merged != null) d.merged = Boolean(r.merged);
   if (r.pr_number != null) d.prNumber = Number(r.pr_number);
   if (r.branch != null) d.branch = String(r.branch);
@@ -428,17 +431,12 @@ export async function persistDiff(diff: Diff, evidence?: unknown): Promise<boole
   return !error;
 }
 
-export async function voteOnDiff(diffId: string, memberId: string, verdict: Vote): Promise<boolean> {
+export async function voteOnDiff(diffId: string, verdict: Vote): Promise<boolean> {
   const sb = getSupabase();
   if (!sb) return false;
-  const { data: diffRows } = await sb.from("diffs").select("votes,status").eq("id", diffId).maybeSingle();
-  if (!diffRows) return false;
-  const votes = { ...((diffRows as Row).votes as Record<string, Vote> ?? {}), [memberId]: verdict };
-  const status = verdict === "reject" ? "rejected" : "pending";
-  const { error } = await sb
-    .from("approvals")
-    .upsert({ diff_id: diffId, member_id: memberId, verdict: verdict === "approve" ? "approve" : "reject" });
-  if (!error) await sb.from("diffs").update({ votes, status }).eq("id", diffId);
+  // A transactional RPC owns the normalized approval and status. The old
+  // client read/merge/write of votes could drop a concurrent reviewer's vote.
+  const { error } = await sb.rpc("cast_diff_approval", { p_diff: diffId, p_verdict: verdict });
   return !error;
 }
 

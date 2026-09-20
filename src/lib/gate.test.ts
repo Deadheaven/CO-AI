@@ -60,6 +60,7 @@ describe("evidence gate", () => {
       hasPassingEvidence(diff({ evidence: { ...passEvidence, tests: { command: "deno test", passed: false, output: "boom" } } }))
     ).toBe(false);
     expect(hasPassingEvidence(diff({ evidence: passEvidence }))).toBe(true);
+    expect(hasPassingEvidence(diff({ evidence: passEvidence, evidenceSource: "unverified" }))).toBe(false);
   });
 });
 

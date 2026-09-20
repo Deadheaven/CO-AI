@@ -94,6 +94,8 @@ export interface Diff {
   votes: Record<string, Vote>;
   comment?: string;
   evidence?: Evidence;
+  /** `unverified` is model-authored/static output, never executable proof. */
+  evidenceSource?: "unverified" | "executor";
   merged?: boolean;
   prNumber?: number;
   branch?: string;

@@ -1,7 +1,14 @@
 import type { Evidence, RepoFile, ThreadStatus } from "../types";
 
 /* ---------- basics ---------- */
-export const uid = () => Math.random().toString(36).slice(2, 10);
+/** IDs cross the browser/Supabase boundary, so live IDs must be UUIDs. */
+export const uid = () => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.floor(Math.random() * 16);
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+};
 export const now = () => Date.now();
 export const fmtTime = (ts: number) =>
   new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
