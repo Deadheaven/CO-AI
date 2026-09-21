@@ -16,6 +16,10 @@ Required configuration when it is wired into the run queue:
 - Nebius Project ID
 - immutable image UUID or approved image tag
 
+The worker uses service-role-only RPCs from migration `0008` to atomically
+claim a run, append an ordered event, and attach evidence to the exact diff.
+It does not accept a browser-supplied evidence payload.
+
 Run its dependency-free contract tests:
 
 ```bash
