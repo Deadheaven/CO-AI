@@ -33,6 +33,20 @@ Run its dependency-free contract tests:
 PYTHONPATH=worker python -m unittest discover -s worker/tests -v
 ```
 
+## Run the worker
+
+Keep these values in the worker host or secret manager, never in browser environment variables:
+
+```bash
+export SUPABASE_URL=https://your-project.supabase.co
+export SUPABASE_SERVICE_ROLE_KEY=...
+export NEBIUS_SANDBOX_BASE_URL=https://...
+export NEBIUS_IAM_TOKEN=...
+export NEBIUS_PROJECT_ID=...
+export NEBIUS_SANDBOX_IMAGE=...
+PYTHONPATH=worker python -m coai_worker.main
+```
+
 The queue-claiming service and repository staging are intentionally separate
 from this adapter. They must supply an exact revision, an allowlisted command,
 and a persistent evidence writer.

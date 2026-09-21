@@ -62,11 +62,11 @@ npm run build
 
 ## Current limitations
 
-The repository import, isolated sandbox worker, GitHub App installation flow,
-and executable test runner are the next required milestones. The present
-one-shot agent function can produce a proposal, but intentionally cannot
-claim it executed tests. This keeps the product honest while those components
-are added.
+Repository files can now be staged into an isolated Nebius sandbox worker;
+configure a workspace verification command before starting a live agent run.
+The remaining deployment gates are applying migrations `0008` and `0009`,
+provisioning worker credentials, a live two-user smoke test, repository import,
+and the GitHub App installation flow.
 
 ## Contributing
 

@@ -221,7 +221,7 @@ async function bootBackendOnce(): Promise<{ ok: true; snapshot: Snapshot } | { o
         sb.from("agent_runs").select("*"),
         sb.from("approvals").select("diff_id,member_id,verdict"),
         sb.from("presence").select("*"),
-        sb.from("workspaces").select("id,approval_threshold,repo_owner,repo_name,base_branch").limit(1).maybeSingle(),
+        sb.from("workspaces").select("id,approval_threshold,repo_owner,repo_name,base_branch,verification_command,verification_cwd").limit(1).maybeSingle(),
       ]);
 
     const threadRows = (threadsRes.data as Row[] | null) ?? [];
@@ -481,6 +481,8 @@ export function workspaceFromRow(r: Row): WorkspaceSettings {
           baseBranch: String(r.base_branch ?? "main"),
         }
       : null,
+    verification: r.verification_command
+      ? { command: String(r.verification_command), cwd: String(r.verification_cwd ?? "/workspace") } : null,
   };
 }
 
@@ -492,6 +494,8 @@ export async function updateWorkspaceSettings(
     repoOwner?: string | null;
     repoName?: string | null;
     baseBranch?: string | null;
+    verificationCommand?: string | null;
+    verificationCwd?: string | null;
   }
 ): Promise<boolean> {
   const sb = getSupabase();
@@ -501,6 +505,8 @@ export async function updateWorkspaceSettings(
   if (patch.repoOwner !== undefined) payload.repo_owner = patch.repoOwner || null;
   if (patch.repoName !== undefined) payload.repo_name = patch.repoName || null;
   if (patch.baseBranch !== undefined) payload.base_branch = patch.baseBranch || "main";
+  if (patch.verificationCommand !== undefined) payload.verification_command = patch.verificationCommand?.trim() || null;
+  if (patch.verificationCwd !== undefined) payload.verification_cwd = patch.verificationCwd?.trim() || "/workspace";
   const { error } = await sb.from("workspaces").update(payload).eq("id", wsId);
   return !error;
 }

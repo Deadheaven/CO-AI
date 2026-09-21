@@ -165,14 +165,22 @@ Deno.serve(async (req: Request) => {
       });
       await pushMessage(sb, threadId, runId, "diff", d.label, diffId);
     }
-    await pushMessage(sb, threadId, runId, "qa", "Self-QA done — diffs are ready for team review, with evidence attached.");
-
-    // review state
-    await setStage(sb, runId, "review");
-    await sb.from("threads").update({ status: "review", ts: Date.now() }).eq("id", threadId);
-    await sb.from("agent_runs").update({ state: "review", queued: false }).eq("id", runId);
-
-    return json({ ok: true, runId });
+    // A model proposal is never treated as executable evidence. Queue it for
+    // the leased sandbox worker, which independently verifies this revision.
+    const { data: threadRow } = await sb.from("threads").select("workspace_id").eq("id", threadId).maybeSingle();
+    const workspaceId = (threadRow as { workspace_id?: string } | null)?.workspace_id;
+    const { data: workspaceRow } = workspaceId
+      ? await sb.from("workspaces").select("verification_command,verification_cwd").eq("id", workspaceId).maybeSingle()
+      : { data: null };
+    const verification = workspaceRow as { verification_command?: string | null; verification_cwd?: string | null } | null;
+    const command = verification?.verification_command ?? null;
+    const cwd = verification?.verification_cwd ?? "/workspace";
+    await sb.from("agent_runs").update({ state: "queue", queued: true, execution_command: command, execution_cwd: cwd }).eq("id", runId);
+    await sb.from("threads").update({ status: "in_progress", ts: Date.now() }).eq("id", threadId);
+    await pushMessage(sb, threadId, runId, "queue", command
+      ? `Proposal ready — sandbox verification queued: ${command}`
+      : "Proposal ready — verification is blocked until a workspace command is configured.");
+    return json({ ok: true, runId, queued: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await setStage(sb, runId, "blocked");

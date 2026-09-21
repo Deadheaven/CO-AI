@@ -29,6 +29,7 @@ import {
   threadFromRow,
   updateMemberProfile,
   updateThreadStatus,
+  workspaceFromRow,
   voteOnDiff,
 } from "./lib/api";
 import {
@@ -55,6 +56,7 @@ import type {
   RunStage,
   Step,
   Thread,
+  WorkspaceSettings,
 } from "./types";
 import { DEFAULT_POLICY } from "./types";
 
@@ -141,6 +143,7 @@ interface CoAIState extends ReturnType<typeof buildSeed> {
   simOn: boolean;
   copilot: Record<string, CopilotMsg[]>;
   presence: Record<string, PresenceInfo>;
+  workspace: WorkspaceSettings | null;
   sendMessage: (threadId: string, body: string) => void;
   runAgent: (threadId: string, prompt: string) => void;
   vote: (diffId: string, verdict: "approve" | "reject", comment?: string) => void;
@@ -156,6 +159,7 @@ interface CoAIState extends ReturnType<typeof buildSeed> {
   kickstartVotes: (threadId: string) => void;
   resetDemo: () => void;
   setSim: (on: boolean) => void;
+  setWorkspace: (workspace: WorkspaceSettings | null) => void;
 }
 
 const scheduledVotes = new Set<string>();
@@ -240,6 +244,7 @@ export const useStore = create<CoAIState>()(
       simOn: true,
       copilot: {},
       presence: {},
+      workspace: null,
 
       sendMessage: (threadId, body) => {
         const text = body.trim();
@@ -643,10 +648,11 @@ export const useStore = create<CoAIState>()(
         stopRealtime();
         stopDemoTabSync();
         clearTimers();
-        set({ ...buildSeed(), simOn: true, copilot: {}, presence: {} });
+        set({ ...buildSeed(), simOn: true, copilot: {}, presence: {}, workspace: null });
       },
 
       setSim: (on) => set({ simOn: on }),
+      setWorkspace: (workspace) => set({ workspace }),
     }),
     {
       name: "coai-store-v1",
@@ -662,6 +668,7 @@ export const useStore = create<CoAIState>()(
         runs: s.runs,
         copilot: s.copilot,
         simOn: s.simOn,
+        workspace: s.workspace,
       }),
       version: 1,
     }
@@ -861,6 +868,11 @@ function applyRealtimeEvent(ev: RealtimeEvent): void {
       if (!row.id) break;
       const run = runFromRow(row);
       useStore.setState({ runs: { ...st.runs, [run.id]: run } });
+      break;
+    }
+    case "workspaces": {
+      if (!row.id) break;
+      useStore.setState({ workspace: workspaceFromRow(row) });
       break;
     }
     case "threads": {

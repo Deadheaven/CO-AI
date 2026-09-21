@@ -50,7 +50,7 @@ class SupabaseWorkerGateway:
         row = rows[0]
         return ClaimedRun(_required(row, "run_id"), _required(row, "thread_id"), _required(row, "prompt"),
           _optional(row, "execution_command"), _optional(row, "execution_cwd") or "/workspace", _optional(row, "base_sha"), int(row.get("attempt", 0)),
-          _diff_ids(row), _files(row))
+          _diff_ids(row), _patched_files(row))
 
     def append_event(self, worker_id: str, run_id: str, event_type: str, payload: Mapping[str, Any]) -> None:
         self._rpc("append_worker_event", {"p_worker_id": worker_id, "p_run": run_id, "p_event_type": event_type, "p_payload": payload})
@@ -106,5 +106,18 @@ def _files(row: Mapping[str, Any]) -> Mapping[str, bytes]:
         if not isinstance(path, str) or not path or path.startswith("/") or "\x00" in path or any(part in {"", ".", ".."} for part in path.split("/")):
             raise QueueError("claimed run has unsafe repository path")
         if not isinstance(content, str): raise QueueError("claimed run has non-text file content")
+        out["/workspace/" + path] = content.encode("utf-8")
+    return out
+
+def _patched_files(row: Mapping[str, Any]) -> Mapping[str, bytes]:
+    out = dict(_files(row))
+    patches = row.get("patches", [])
+    if not isinstance(patches, list): raise QueueError("claimed run has invalid patches")
+    for patch in patches:
+        if not isinstance(patch, Mapping): raise QueueError("claimed run has invalid patch")
+        path, content = patch.get("path"), patch.get("after")
+        if not isinstance(path, str) or not path or path.startswith("/") or "\x00" in path or any(part in {"", ".", ".."} for part in path.split("/")):
+            raise QueueError("claimed run has unsafe patch path")
+        if not isinstance(content, str): raise QueueError("claimed run has non-text patch content")
         out["/workspace/" + path] = content.encode("utf-8")
     return out

@@ -21,8 +21,10 @@ class SupabaseGatewayTests(unittest.TestCase):
 
     def test_claim_uses_worker_only_rpc_and_parses_one_run(self):
         requests = []
-        gateway = self.gateway([{"run_id":"r","thread_id":"t","prompt":"fix","execution_command":"npm test","execution_cwd":"/workspace","base_sha":"abc","attempt":1,"diff_ids":["d"],"files":[{"path":"src/a.ts","content":"export {}"}]}], requests)
-        self.assertEqual("r", gateway.claim("worker-1").run_id)
+        gateway = self.gateway([{"run_id":"r","thread_id":"t","prompt":"fix","execution_command":"npm test","execution_cwd":"/workspace","base_sha":"abc","attempt":1,"diff_ids":["d"],"files":[{"path":"src/a.ts","content":"export {}"}],"patches":[{"id":"d","path":"src/a.ts","after":"export const fixed = true"}]}], requests)
+        run = gateway.claim("worker-1")
+        self.assertEqual("r", run.run_id)
+        self.assertEqual(b"export const fixed = true", run.files["/workspace/src/a.ts"])
         self.assertIn("/rpc/claim_agent_run", requests[0].full_url)
         self.assertEqual("Bearer service-key", requests[0].headers["Authorization"])
 

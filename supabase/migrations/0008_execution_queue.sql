@@ -10,7 +10,7 @@ create index if not exists idx_agent_runs_claimable
   on public.agent_runs(started_at) where state = 'queue';
 
 create or replace function public.claim_agent_run(p_worker_id text, p_lease_seconds int default 90)
-returns table (run_id uuid, thread_id uuid, prompt text, execution_command text, execution_cwd text, base_sha text, attempt int, diff_ids uuid[], files jsonb)
+returns table (run_id uuid, thread_id uuid, prompt text, execution_command text, execution_cwd text, base_sha text, attempt int, diff_ids uuid[], files jsonb, patches jsonb)
 language plpgsql security definer set search_path = public as $$
 declare v_run public.agent_runs%rowtype;
 begin
@@ -21,10 +21,11 @@ begin
   order by started_at asc for update skip locked limit 1;
   if not found then return; end if;
   update public.agent_runs set lease_owner = p_worker_id, lease_expires_at = now() + make_interval(secs => p_lease_seconds),
-    attempt = attempt + 1, state = 'plan', queued = false where id = v_run.id returning * into v_run;
+    attempt = attempt + 1, state = 'qa', queued = false where id = v_run.id returning * into v_run;
   return query select v_run.id, v_run.thread_id, v_run.prompt, v_run.execution_command, v_run.execution_cwd, v_run.base_sha, v_run.attempt,
     coalesce((select array_agg(d.id order by d.ts) from public.diffs d where d.run_id = v_run.id and d.superseded_at is null), '{}'::uuid[]),
-    coalesce((select jsonb_agg(jsonb_build_object('path', f.path, 'content', f.content) order by f.path) from public.files f where f.thread_id = v_run.thread_id), '[]'::jsonb);
+    coalesce((select jsonb_agg(jsonb_build_object('path', f.path, 'content', f.content) order by f.path) from public.files f where f.thread_id = v_run.thread_id), '[]'::jsonb),
+    coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'path', d.path, 'after', d.after) order by d.ts) from public.diffs d where d.run_id = v_run.id and d.superseded_at is null), '[]'::jsonb);
 end;
 $$;
 

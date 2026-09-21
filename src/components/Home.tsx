@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ArrowRight, Bot, Code2, FileDiff, ListChecks, Pencil, Plus, RefreshCw, Terminal, Users } from "lucide-react";
 import { Avatar, AvatarStack, Button, CopyButton, EmptyState, Field, LiveDot, Modal, cn, inputCls } from "./ui";
 import { useStore, isLive } from "../store";
-import { COLORS } from "../lib/api";
+import { COLORS, updateWorkspaceSettings } from "../lib/api";
 import { fmtTime } from "../lib/engine";
 
 export function Logo({ size = 22 }: { size?: number }) {
@@ -28,12 +28,18 @@ export default function Home({
   const createThread = useStore((s) => s.createThread);
   const joinThread = useStore((s) => s.joinThread);
   const updateMe = useStore((s) => s.updateMe);
+  const workspace = useStore((s) => s.workspace);
+  const setWorkspace = useStore((s) => s.setWorkspace);
 
   const live = isLive();
 
   const [createOpen, setCreateOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [verificationOpen, setVerificationOpen] = useState(false);
+  const [verificationCommand, setVerificationCommand] = useState("");
+  const [verificationCwd, setVerificationCwd] = useState("/workspace");
+  const [verificationError, setVerificationError] = useState("");
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [code, setCode] = useState("");
@@ -83,6 +89,24 @@ export default function Home({
     setProfileOpen(false);
   };
 
+  const openVerification = () => {
+    setVerificationCommand(workspace?.verification?.command ?? "");
+    setVerificationCwd(workspace?.verification?.cwd ?? "/workspace");
+    setVerificationError("");
+    setVerificationOpen(true);
+  };
+  const saveVerification = async () => {
+    if (!workspace || !verificationCommand.trim() || !verificationCwd.trim().startsWith("/")) {
+      setVerificationError("Enter a command and an absolute sandbox working directory."); return;
+    }
+    const command = verificationCommand.trim(), cwd = verificationCwd.trim();
+    if (!await updateWorkspaceSettings(workspace.id, { verificationCommand: command, verificationCwd: cwd })) {
+      setVerificationError("Could not save workspace verification settings."); return;
+    }
+    setWorkspace({ ...workspace, verification: { command, cwd } });
+    setVerificationOpen(false);
+  };
+
   return (
     <div className="flex h-screen flex-col">
       {/* top bar */}
@@ -100,6 +124,9 @@ export default function Home({
           <span className="hidden items-center gap-2 rounded-full border border-border bg-panel px-3 py-1 text-[11px] text-foreground/70 sm:inline-flex">
             <LiveDot /> {onlineCount} online · {live ? "live workspace · synced" : simOn ? "simulated live engine" : "engine off"}
           </span>
+          {live && <Button variant="outline" size="sm" onClick={openVerification} aria-label="Configure sandbox verification">
+            <Terminal size={14} /> Verify
+          </Button>}
           <Button variant="outline" size="sm" onClick={() => setJoinOpen(true)} aria-label="Join a thread by code">
             <Users size={14} /> Join
           </Button>
@@ -340,6 +367,19 @@ export default function Home({
             </div>
           </div>
           <Button variant="primary" onClick={saveProfile}>Save profile</Button>
+        </div>
+      </Modal>
+      <Modal open={verificationOpen} onClose={() => setVerificationOpen(false)} title="Sandbox verification">
+        <div className="flex flex-col gap-3">
+          <Field label="Verification command" htmlFor="verification-command">
+            <input id="verification-command" className={inputCls} value={verificationCommand} onChange={(e) => setVerificationCommand(e.target.value)} placeholder="npm test" autoFocus />
+          </Field>
+          <Field label="Sandbox working directory" htmlFor="verification-cwd">
+            <input id="verification-cwd" className={inputCls} value={verificationCwd} onChange={(e) => setVerificationCwd(e.target.value)} placeholder="/workspace" />
+          </Field>
+          <p className="text-[11px] leading-relaxed text-foreground/50">CO-AI runs this command in a disposable, network-disabled sandbox against the proposed revision.</p>
+          {verificationError && <p className="text-[11px] text-destructive">{verificationError}</p>}
+          <Button variant="primary" onClick={saveVerification}>Save verification command</Button>
         </div>
       </Modal>
     </div>
