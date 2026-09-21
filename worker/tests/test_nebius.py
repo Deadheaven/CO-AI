@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import unittest
 from email.message import Message
@@ -52,3 +53,23 @@ class NebiusSandboxExecutorTests(unittest.TestCase):
     def test_rejects_non_https_endpoint(self):
         with self.assertRaises(ValueError):
             SandboxConfig("http://sandbox.example", "token", "project", "tag:node:22")
+
+    def test_uploads_and_mounts_exact_repository_files(self):
+        requests = []
+        content = b"export const answer = 42;\n"
+
+        def opener(request, timeout):
+            requests.append(request)
+            if request.full_url.endswith("/files"):
+                return Response({"uuid": "file-1", "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)})
+            return Response({"result": {"state": {"exit_code": 0, "timed_out": False}, "stdout": {"value": ""}, "stderr": {"value": ""}}})
+
+        NebiusSandboxExecutor(self.config(), opener=opener).run("npm test", files={"/workspace/src/a.ts": content})
+        self.assertEqual("application/octet-stream", requests[0].headers["Content-type"])
+        payload = json.loads(requests[1].data)
+        self.assertEqual({"uuid": "file-1", "mode": "0644"}, payload["files"]["/workspace/src/a.ts"])
+        self.assertFalse(payload["networking"]["enabled"])
+
+    def test_rejects_path_traversal_when_staging(self):
+        with self.assertRaises(ValueError):
+            NebiusSandboxExecutor(self.config(), opener=lambda *_, **__: Response({})).stage_files({"/workspace/../secret": b"no"})

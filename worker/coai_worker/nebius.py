@@ -8,6 +8,7 @@ disposable VM-backed instance, then poll the operation URL supplied in the
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import time
 from dataclasses import dataclass
@@ -57,6 +58,13 @@ class SandboxResult:
         return self.exit_code == 0 and not self.timed_out
 
 
+@dataclass(frozen=True)
+class UploadedFile:
+    uuid: str
+    sha256: str
+    size: int
+
+
 Opener = Callable[..., Any]
 Sleeper = Callable[[float], None]
 Clock = Callable[[], float]
@@ -78,12 +86,13 @@ class NebiusSandboxExecutor:
         self._sleep = sleeper
         self._clock = clock
 
-    def run(self, command: str, *, cwd: str = "/workspace") -> SandboxResult:
+    def run(self, command: str, *, cwd: str = "/workspace", files: Mapping[str, bytes] | None = None) -> SandboxResult:
         if not command.strip():
             raise ValueError("command is required")
         if not cwd.startswith("/"):
             raise ValueError("cwd must be absolute")
 
+        staged = self.stage_files(files or {})
         payload = {
             "command": command,
             "image": self._config.image,
@@ -93,6 +102,7 @@ class NebiusSandboxExecutor:
             "truncate_output_at": self._config.output_limit_bytes,
             "disposable": True,
             "networking": {"enabled": False},
+            "files": staged,
         }
         response, body = self._request("POST", "/instances", payload)
         location = response.get("Location") or response.get("location")
@@ -107,6 +117,30 @@ class NebiusSandboxExecutor:
             return self._result(operation_url, body)
         return self._poll(operation_url)
 
+    def stage_files(self, files: Mapping[str, bytes]) -> Mapping[str, Mapping[str, str]]:
+        """Upload exact bytes and return the documented instance file mapping."""
+        staged: dict[str, Mapping[str, str]] = {}
+        for path, content in files.items():
+            if not _safe_mount_path(path):
+                raise ValueError(f"unsafe sandbox file path: {path!r}")
+            if not isinstance(content, bytes):
+                raise TypeError("sandbox file content must be bytes")
+            uploaded = self.upload_file(content)
+            staged[path] = {"uuid": uploaded.uuid, "mode": "0644"}
+        return staged
+
+    def upload_file(self, content: bytes) -> UploadedFile:
+        """Upload content and verify provider-reported digest and size."""
+        headers, body = self._request_bytes("POST", "/files", content, "application/octet-stream")
+        _ = headers
+        uuid = body.get("uuid")
+        digest = body.get("sha256")
+        size = body.get("size")
+        expected = hashlib.sha256(content).hexdigest()
+        if not isinstance(uuid, str) or not uuid or digest != expected or size != len(content):
+            raise SandboxError("sandbox upload response failed content integrity verification")
+        return UploadedFile(uuid=uuid, sha256=digest, size=size)
+
     def _poll(self, operation_url: str) -> SandboxResult:
         deadline = self._clock() + self._config.timeout_seconds + 30
         while self._clock() < deadline:
@@ -117,8 +151,11 @@ class NebiusSandboxExecutor:
         raise SandboxError("sandbox operation did not produce a result before worker deadline")
 
     def _request(self, method: str, path_or_url: str, payload: Mapping[str, Any] | None = None) -> tuple[Mapping[str, str], Mapping[str, Any]]:
-        url = path_or_url if path_or_url.startswith("https://") else self._config.base_url.rstrip("/") + path_or_url
         data = json.dumps(payload).encode() if payload is not None else None
+        return self._request_bytes(method, path_or_url, data, "application/json")
+
+    def _request_bytes(self, method: str, path_or_url: str, data: bytes | None, content_type: str) -> tuple[Mapping[str, str], Mapping[str, Any]]:
+        url = path_or_url if path_or_url.startswith("https://") else self._config.base_url.rstrip("/") + path_or_url
         request = Request(
             url,
             data=data,
@@ -126,7 +163,7 @@ class NebiusSandboxExecutor:
             headers={
                 "Authorization": f"Bearer {self._config.iam_token}",
                 "Project": self._config.project_id,
-                "Content-Type": "application/json",
+                "Content-Type": content_type,
                 "Accept": "application/json",
             },
         )
@@ -187,3 +224,7 @@ def _decode_stream(stream: Mapping[str, Any]) -> str:
         except ValueError as error:
             raise SandboxError("sandbox stream was invalid base64") from error
     return value
+
+
+def _safe_mount_path(path: str) -> bool:
+    return path.startswith("/") and "\x00" not in path and all(part not in {"", ".", ".."} for part in path.split("/")[1:])

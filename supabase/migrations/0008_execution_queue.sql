@@ -10,7 +10,7 @@ create index if not exists idx_agent_runs_claimable
   on public.agent_runs(started_at) where state = 'queue';
 
 create or replace function public.claim_agent_run(p_worker_id text, p_lease_seconds int default 90)
-returns table (run_id uuid, thread_id uuid, prompt text, execution_command text, execution_cwd text, base_sha text, attempt int)
+returns table (run_id uuid, thread_id uuid, prompt text, execution_command text, execution_cwd text, base_sha text, attempt int, diff_ids uuid[], files jsonb)
 language plpgsql security definer set search_path = public as $$
 declare v_run public.agent_runs%rowtype;
 begin
@@ -22,7 +22,9 @@ begin
   if not found then return; end if;
   update public.agent_runs set lease_owner = p_worker_id, lease_expires_at = now() + make_interval(secs => p_lease_seconds),
     attempt = attempt + 1, state = 'plan', queued = false where id = v_run.id returning * into v_run;
-  return query select v_run.id, v_run.thread_id, v_run.prompt, v_run.execution_command, v_run.execution_cwd, v_run.base_sha, v_run.attempt;
+  return query select v_run.id, v_run.thread_id, v_run.prompt, v_run.execution_command, v_run.execution_cwd, v_run.base_sha, v_run.attempt,
+    coalesce((select array_agg(d.id order by d.ts) from public.diffs d where d.run_id = v_run.id and d.superseded_at is null), '{}'::uuid[]),
+    coalesce((select jsonb_agg(jsonb_build_object('path', f.path, 'content', f.content) order by f.path) from public.files f where f.thread_id = v_run.thread_id), '[]'::jsonb);
 end;
 $$;
 
@@ -65,9 +67,24 @@ begin
 end;
 $$;
 
+create or replace function public.finish_worker_run(p_worker_id text, p_run uuid, p_passed boolean)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not exists (select 1 from public.agent_runs where id = p_run and lease_owner = p_worker_id and lease_expires_at > now()) then
+    raise exception 'worker lease is missing or expired' using errcode = '42501';
+  end if;
+  perform public.append_worker_event(p_worker_id, p_run, 'run-finished', jsonb_build_object('passed', p_passed));
+  update public.agent_runs set state = case when p_passed then 'review' else 'blocked' end,
+    lease_owner = null, lease_expires_at = null, finished_at = case when p_passed then null else (extract(epoch from now()) * 1000)::bigint end
+  where id = p_run;
+end;
+$$;
+
 revoke all on function public.claim_agent_run(text, int) from public;
 revoke all on function public.append_worker_event(text, uuid, text, jsonb) from public;
 revoke all on function public.record_executor_evidence(text, uuid, uuid, text, boolean, text, boolean, text) from public;
+revoke all on function public.finish_worker_run(text, uuid, boolean) from public;
 grant execute on function public.claim_agent_run(text, int) to service_role;
 grant execute on function public.append_worker_event(text, uuid, text, jsonb) to service_role;
 grant execute on function public.record_executor_evidence(text, uuid, uuid, text, boolean, text, boolean, text) to service_role;
+grant execute on function public.finish_worker_run(text, uuid, boolean) to service_role;
