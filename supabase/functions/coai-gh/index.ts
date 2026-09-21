@@ -83,6 +83,7 @@ Deno.serve(async (req: Request) => {
       message: "Add a GITHUB_PAT secret and connect a repository in Settings — merges stay locked until then.",
     });
   }
+  if (!validRepoSlug(repo)) return json({ ok: false, reason: "bad-request", message: "repository must use owner/name format" });
 
   const gh = (path: string, init?: RequestInit) =>
     fetch(`https://api.github.com${path}`, {
@@ -98,6 +99,7 @@ Deno.serve(async (req: Request) => {
   // ---- test connection (Home → Settings → Connect repository) -------------
   if (action === "test") {
     const testRepo = (body?.repo && body.repo.includes("/") ? body.repo : repo).replace(/^\/+|\/+$/g, "");
+    if (!validRepoSlug(testRepo)) return json({ ok: false, reason: "bad-request", message: "repository must use owner/name format" });
     try {
       const r = await gh(`/repos/${testRepo}`);
       if (r.ok) {
@@ -130,6 +132,24 @@ Deno.serve(async (req: Request) => {
     .eq("member_id", authData.user.id)
     .maybeSingle();
   if (!membership) return json({ ok: false, reason: "forbidden", message: "not a thread member" }, 403);
+
+  if (action === "import") {
+    try {
+      const imported = await importRepository(gh, repo, base);
+      const { data: importedCount, error: importError } = await sb.rpc("replace_thread_files", {
+        p_thread: threadId, p_actor: authData.user.id, p_files: imported.files,
+      });
+      if (importError) throw new Error("database import failed");
+      await sb.from("messages").insert({
+        thread_id: threadId, author_id: "system", kind: "system",
+        body: `Imported ${importedCount ?? imported.files.length} text files from ${repo}@${base}; skipped ${imported.skipped} unsupported or oversized files.`, ts: Date.now(),
+      });
+      return json({ ok: true, imported: importedCount ?? imported.files.length, skipped: imported.skipped, base });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return json({ ok: false, reason: "github-error", message: msg.slice(0, 300) });
+    }
+  }
 
   // ---- structural gate (server-side, cannot be bypassed) -----------------
   const { data: canMerge } = await sb.rpc("thread_can_merge", { p_thread: threadId });
@@ -215,3 +235,52 @@ Deno.serve(async (req: Request) => {
     return json({ ok: false, reason: "github-error", message: msg.slice(0, 300) });
   }
 });
+
+type GithubFetch = (path: string, init?: RequestInit) => Promise<Response>;
+type ImportedFile = { path: string; content: string };
+
+async function importRepository(gh: GithubFetch, repo: string, base: string): Promise<{ files: ImportedFile[]; skipped: number }> {
+  const ref = await gh(`/repos/${repo}/git/ref/heads/${encodeURIComponent(base)}`);
+  if (!ref.ok) throw new Error(`GitHub branch lookup failed (${ref.status})`);
+  const refBody = await ref.json() as { object?: { sha?: string } };
+  const sha = refBody.object?.sha;
+  if (!sha) throw new Error("GitHub branch response omitted its commit SHA");
+  const tree = await gh(`/repos/${repo}/git/trees/${sha}?recursive=1`);
+  if (!tree.ok) throw new Error(`GitHub tree lookup failed (${tree.status})`);
+  const treeBody = await tree.json() as { tree?: { path?: string; type?: string; sha?: string; size?: number }[]; truncated?: boolean };
+  if (treeBody.truncated) throw new Error("repository is too large to import in one bounded operation");
+  const entries = (treeBody.tree ?? []).filter((entry) => entry.type === "blob" && typeof entry.path === "string");
+  if (entries.length > 120) throw new Error("repository has more than 120 files; import a smaller repository or add filtering");
+  const files: ImportedFile[] = [];
+  let skipped = 0;
+  let totalBytes = 0;
+  for (const entry of entries) {
+    const path = entry.path as string;
+    if (!safeRepoPath(path) || (entry.size ?? 0) > 256_000 || totalBytes + (entry.size ?? 0) > 2_000_000) {
+      skipped++;
+      continue;
+    }
+    const blob = await gh(`/repos/${repo}/git/blobs/${entry.sha}`);
+    if (!blob.ok) throw new Error(`GitHub blob lookup failed (${blob.status})`);
+    const body = await blob.json() as { content?: string; encoding?: string };
+    if (body.encoding !== "base64" || typeof body.content !== "string") throw new Error("GitHub returned an unsupported blob encoding");
+    const content = decodeBase64(body.content);
+    if (content.includes("\u0000")) { skipped++; continue; }
+    totalBytes += new TextEncoder().encode(content).byteLength;
+    files.push({ path, content });
+  }
+  return { files, skipped };
+}
+
+function safeRepoPath(path: string): boolean {
+  return !path.startsWith("/") && !path.includes("\u0000") && !path.split("/").some((part) => part === "" || part === "." || part === "..") && !path.split("/").includes(".git");
+}
+
+function decodeBase64(value: string): string {
+  const bytes = Uint8Array.from(atob(value.replace(/\s/g, "")), (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function validRepoSlug(value: string): boolean {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value);
+}

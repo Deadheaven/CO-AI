@@ -40,6 +40,9 @@ export default function Home({
   const [verificationCommand, setVerificationCommand] = useState("");
   const [verificationCwd, setVerificationCwd] = useState("/workspace");
   const [verificationError, setVerificationError] = useState("");
+  const [repoOwner, setRepoOwner] = useState("");
+  const [repoName, setRepoName] = useState("");
+  const [baseBranch, setBaseBranch] = useState("main");
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [code, setCode] = useState("");
@@ -91,22 +94,27 @@ export default function Home({
 
   const openVerification = () => {
     setVerificationCommand(workspace?.verification?.command ?? "");
+    setRepoOwner(workspace?.repo?.owner ?? "");
+    setRepoName(workspace?.repo?.name ?? "");
+    setBaseBranch(workspace?.repo?.baseBranch ?? "main");
     setVerificationCwd(workspace?.verification?.cwd ?? "/workspace");
     setVerificationError("");
     setVerificationOpen(true);
   };
   const saveVerification = async () => {
-    if (!workspace || !verificationCommand.trim() || !verificationCwd.trim().startsWith("/")) {
-      setVerificationError("Enter a command and an absolute sandbox working directory."); return;
-    }
+    const owner = repoOwner.trim(), name = repoName.trim(), branch = baseBranch.trim() || "main";
+    if (!workspace || !verificationCommand.trim() || !verificationCwd.trim().startsWith("/") || (!!owner !== !!name)) { setVerificationError("Enter a command, absolute sandbox directory, and both repo owner/name or neither."); return; }
+
     const command = verificationCommand.trim(), cwd = verificationCwd.trim();
-    if (!await updateWorkspaceSettings(workspace.id, { verificationCommand: command, verificationCwd: cwd })) {
-      setVerificationError("Could not save workspace verification settings."); return;
+    if (!await updateWorkspaceSettings(workspace.id, {
+      verificationCommand: command, verificationCwd: cwd,
+      repoOwner: owner || null, repoName: name || null, baseBranch: branch,
+    })) {
+      setVerificationError("Could not save workspace settings."); return;
     }
-    setWorkspace({ ...workspace, verification: { command, cwd } });
+    setWorkspace({ ...workspace, repo: owner ? { owner, name, baseBranch: branch } : null, verification: { command, cwd } });
     setVerificationOpen(false);
   };
-
   return (
     <div className="flex h-screen flex-col">
       {/* top bar */}
@@ -371,6 +379,15 @@ export default function Home({
       </Modal>
       <Modal open={verificationOpen} onClose={() => setVerificationOpen(false)} title="Sandbox verification">
         <div className="flex flex-col gap-3">
+          <Field label="GitHub owner" htmlFor="repo-owner">
+            <input id="repo-owner" className={inputCls} value={repoOwner} onChange={(e) => setRepoOwner(e.target.value)} placeholder="octocat" />
+          </Field>
+          <Field label="GitHub repository" htmlFor="repo-name">
+            <input id="repo-name" className={inputCls} value={repoName} onChange={(e) => setRepoName(e.target.value)} placeholder="hello-world" />
+          </Field>
+          <Field label="Base branch" htmlFor="base-branch">
+            <input id="base-branch" className={inputCls} value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} placeholder="main" />
+          </Field>
           <Field label="Verification command" htmlFor="verification-command">
             <input id="verification-command" className={inputCls} value={verificationCommand} onChange={(e) => setVerificationCommand(e.target.value)} placeholder="npm test" autoFocus />
           </Field>

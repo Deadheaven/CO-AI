@@ -535,7 +535,31 @@ export async function invokeGhTest(repo?: string): Promise<GhTestResult> {
   }
 }
 
+export interface GhImportResult {
+  ok: boolean;
+  imported?: number;
+  skipped?: number;
+  base?: string;
+  reason?: string;
+  message?: string;
+}
+
+/** Import the connected repository snapshot into one member-owned thread. */
+export async function invokeGhImport(threadId: string): Promise<GhImportResult> {
+  const sb = getSupabase();
+  if (!sb) return { ok: false, reason: "not-configured", message: "Supabase is not configured." };
+  try {
+    const { data, error } = await sb.functions.invoke("coai-gh", { body: { action: "import", threadId } });
+    if (error) return { ok: false, reason: error.message, message: error.message };
+    return (data as GhImportResult) ?? { ok: true };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, reason: "github-error", message: msg };
+
+  }
+}
 /* ---------- presence (M1 realtime team layer) ---------- */
+
 
 export function presenceFromRow(r: Row): PresenceInfo {
   const memberId = String(r.member_id);
