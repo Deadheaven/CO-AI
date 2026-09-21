@@ -27,6 +27,7 @@ order:
 supabase db push
 supabase functions deploy coai-agent
 supabase functions deploy coai-gh
+supabase functions deploy coai-replay
 ```
 
 The edge functions need `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from
@@ -62,11 +63,10 @@ npm run build
 
 ## Current limitations
 
-Repository files can now be staged into an isolated Nebius sandbox worker;
-configure a workspace verification command before starting a live agent run.
-The remaining deployment gates are applying migrations `0008` and `0009`,
-provisioning worker credentials, a live two-user smoke test, repository import,
-and the GitHub App installation flow.
+Repository import and isolated verification are now implemented locally. The
+remaining deployment gates are applying migrations `0008`–`0010`, provisioning
+worker credentials, a live two-user smoke test, and the GitHub App installation
+flow. Replay export is authenticated and excludes repository contents/raw output.
 
 ## Contributing
 

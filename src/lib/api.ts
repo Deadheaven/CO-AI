@@ -558,6 +558,27 @@ export async function invokeGhImport(threadId: string): Promise<GhImportResult> 
 
   }
 }
+
+export interface ReplayExportResult {
+  ok: boolean;
+  data?: Record<string, unknown>;
+  reason?: string;
+  message?: string;
+}
+
+/** Download the authenticated, secret-safe replay record for a thread. */
+export async function invokeReplayExport(threadId: string): Promise<ReplayExportResult> {
+  const sb = getSupabase();
+  if (!sb) return { ok: false, reason: "not-configured", message: "Supabase is not configured." };
+  try {
+    const { data, error } = await sb.functions.invoke("coai-replay", { body: { threadId } });
+    if (error) return { ok: false, reason: error.message, message: error.message };
+    return { ok: true, data: data as Record<string, unknown> };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, reason: "replay-export-error", message: msg };
+  }
+}
 /* ---------- presence (M1 realtime team layer) ---------- */
 
 
