@@ -38,7 +38,7 @@ alter table public.diffs
   add column if not exists superseded_at timestamptz;
 
 update public.diffs
-set revision_hash = encode(digest(path || E'\\000' || before || E'\\000' || after, 'sha256'), 'hex')
+set revision_hash = encode(extensions.digest(path || E'\\000' || before || E'\\000' || after, 'sha256'), 'hex')
 where revision_hash is null;
 alter table public.diffs alter column revision_hash set not null;
 create unique index if not exists idx_diffs_revision_hash on public.diffs(thread_id, revision_hash);
