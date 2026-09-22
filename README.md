@@ -6,7 +6,8 @@ CO-AI turns a task into a reviewable decision trail: request, planned patch,
 human feedback, execution evidence, revision-bound approvals, and a GitHub PR.
 It is built for small engineering teams, not autonomous deployment.
 
-> Status: early hackathon build. Demo mode is available without credentials.
+> Status: early hackathon build. The Supabase schema and Edge Functions are deployed;
+> demo mode remains available without credentials.
 > The hosted approval gate intentionally rejects model-authored test output;
 > executor-backed evidence is required before a live merge can unlock.
 
@@ -58,15 +59,17 @@ npm run build
   immutable patch revision.
 - A rejection blocks that revision. Any new revision needs fresh approval.
 - Live merges require passing evidence marked as coming from an executor.
-- Public replay/export is not implemented yet; do not place secrets in task
-  text, repository files, or logs.
+- Replay export is authenticated and intentionally excludes repository contents
+  and raw executor output. Do not place secrets in task text, repository files,
+  or logs.
 
 ## Current limitations
 
-Repository import and isolated verification are now implemented locally. The
-remaining deployment gates are applying migrations `0008`–`0010`, provisioning
-worker credentials, a live two-user smoke test, and the GitHub App installation
-flow. Replay export is authenticated and excludes repository contents/raw output.
+Repository import, isolated verification, and replay export are deployed. The
+remaining launch gates are browser configuration, model/GitHub/Nebius runtime
+secrets, an always-on worker deployment, a live two-user smoke test, and the
+GitHub App installation flow. Replay export excludes repository contents and
+raw executor output.
 
 ## Contributing
 
