@@ -47,7 +47,13 @@ supabase secrets set GITHUB_PAT=...
 npm test
 npm run typecheck
 npm run build
+npm run preflight
 ```
+
+`npm run preflight -- --live` additionally checks for populated browser and
+worker config files and reads linked Supabase migration, active-function, and
+required-secret **names** status. It never prints secret values. The live check
+requires Supabase CLI authentication and does not deploy or modify remote state.
 
 ## Trust model
 
