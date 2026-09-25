@@ -1,0 +1,11 @@
+.git
+.env*
+node_modules
+dist
+worker
+supabase
+scripts
+tests
+**/__pycache__
+**/*.py[cod]
+coverage

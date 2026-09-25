@@ -35,7 +35,7 @@ PYTHONPATH=worker python -m unittest discover -s worker/tests -v
 
 ## Run the worker
 
-For a Docker host, create a private worker environment file from the template:
+For local worker development, create a private worker environment file from the template:
 
 ```bash
 cp worker/.env.worker.example worker/.env.worker
@@ -47,5 +47,6 @@ docker compose --env-file worker/.env.worker -f compose.worker.yaml logs -f coai
 The service restarts automatically, runs without Linux capabilities or a
 writable container filesystem, and exposes no inbound port. The populated
 environment file is ignored by git and excluded from the Docker build context.
+For the Nebius hosted demo, follow [../deploy/NEBIUS.md](../deploy/NEBIUS.md).
 Keep these credentials in the worker host's secret manager for hosted
 deployments; never put the service-role or Nebius keys in browser configuration.

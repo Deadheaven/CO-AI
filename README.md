@@ -6,8 +6,9 @@ CO-AI turns a task into a reviewable decision trail: request, planned patch,
 human feedback, execution evidence, revision-bound approvals, and a GitHub PR.
 It is built for small engineering teams, not autonomous deployment.
 
-> Status: early hackathon build. The Supabase schema and Edge Functions are deployed;
-> demo mode remains available without credentials.
+> Status: early hackathon build. The Nebius-hosted demo path is prepared; it needs
+> project credentials and a live sandbox smoke test before it is judge-ready.
+> Demo mode remains available without credentials.
 > The hosted approval gate intentionally rejects model-authored test output;
 > executor-backed evidence is required before a live merge can unlock.
 
@@ -33,13 +34,26 @@ supabase functions deploy coai-replay
 
 The edge functions need `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from
 their runtime environment. Configure model and GitHub credentials as Supabase
-function secrets, never as `VITE_` variables.
+function secrets, never as `VITE_` variables. The hackathon route uses Nemotron
+through Nebius Token Factory; it selects a live catalog model or validates the
+configured Nemotron ID before making a request.
+
+Add `NEBIUS_API_KEY` and `COAI_LLM_PROVIDER=nebius` in the Supabase project’s
+Edge Function secrets. Optionally add `NEBIUS_MODEL_ID` with an exact ID
+returned by the Token Factory `/v1/models` endpoint. Add the current GitHub
+connector credential as `GITHUB_PAT`. Then deploy the function:
 
 ```bash
-supabase secrets set NVIDIA_API_KEY=...  # or LLM_API_KEY
-# Current GitHub connector compatibility path:
-supabase secrets set GITHUB_PAT=...
+supabase functions deploy coai-agent
 ```
+
+## Nebius demo deployment
+
+The demo can serve the built web app and run the queue worker on one Nebius AI
+Cloud VM. Caddy provides HTTPS for a domain pointed at that VM. The worker
+connects to Nebius Token Factory Sandboxes, and the Supabase Edge Function calls
+Nemotron through Token Factory. See [deploy/NEBIUS.md](deploy/NEBIUS.md) for VM
+setup, secret placement, deploy, smoke-test, and teardown instructions.
 
 ## Development checks
 
@@ -71,13 +85,13 @@ requires Supabase CLI authentication and does not deploy or modify remote state.
 
 ## Current limitations
 
-Repository import, isolated verification, and replay export are deployed. The
-remaining launch gates are browser configuration, Nebius and worker-host
-credentials, deploying the always-on worker (a Docker Compose configuration is
-provided), a live two-user smoke test, and the GitHub App installation flow.
-NVIDIA Nemotron and the GitHub PAT compatibility path are configured as
-Supabase Function secrets. Replay export excludes repository contents and raw
-executor output.
+Repository import, isolated verification, and replay export are implemented.
+The Nebius demo deployment configuration is provided, but deployment, live
+Token Factory inference, sandbox execution, and the two-user smoke test still
+require configured accounts and credentials. The current GitHub PAT path is
+available; a GitHub App installation flow is not part of the hackathon demo
+critical path. Replay export excludes repository contents and raw executor
+output.
 
 ## Contributing
 

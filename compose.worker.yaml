@@ -1,4 +1,31 @@
 services:
+  coai-web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:?set VITE_SUPABASE_URL in .env.nebius}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY:?set VITE_SUPABASE_ANON_KEY in .env.nebius}
+    restart: unless-stopped
+    environment:
+      COAI_DOMAIN: ${COAI_DOMAIN:?set COAI_DOMAIN in .env.nebius}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /config/caddy:rw,noexec,nosuid,size=4m
   coai-worker:
     build:
       context: ./worker
@@ -26,3 +53,7 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:

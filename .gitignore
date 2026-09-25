@@ -16,6 +16,7 @@ dist-ssr
 .env
 .env.*
 !.env.example
+!.env.nebius.example
 !worker/.env.worker.example
 worker/.env.worker
 supabase/.temp/

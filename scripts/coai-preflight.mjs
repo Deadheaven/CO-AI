@@ -18,7 +18,8 @@ function envNamesFromFile(path) {
     const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
     if (!match) continue;
     const value = match[2].replace(/^(["'])(.*)\1$/, "$2").trim();
-    if (value && !value.startsWith("replace-with-") && !value.startsWith("your-")) {
+    const placeholder = /(?:^|[./_-])(?:replace-with-|your-)|example\.(?:com|org|net)/i.test(value);
+    if (value && !placeholder) {
       names.add(match[1]);
     }
   }
@@ -69,10 +70,15 @@ function main() {
   const shellNames = new Set(
     Object.entries(process.env).filter(([, value]) => Boolean(value)).map(([key]) => key),
   );
-  const browserNames = new Set([...shellNames, ...envNamesFromFile(".env.local")]);
+  const browserNames = new Set([
+    ...shellNames,
+    ...envNamesFromFile(".env.local"),
+    ...envNamesFromFile(".env.nebius"),
+  ]);
   const workerNames = new Set([...shellNames, ...envNamesFromFile("worker/.env.worker")]);
   report("browser config", [
     ...["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY"].filter((name) => !browserNames.has(name)),
+    ...["COAI_DOMAIN"].filter((name) => !browserNames.has(name)),
   ]);
   report("worker host config", [
     ...[
@@ -102,9 +108,8 @@ function main() {
   } else {
     const names = new Set(secretItems.map((secret) => secret.name));
     const missing = [];
-    if (!names.has("NVIDIA_API_KEY") && !names.has("LLM_API_KEY")) {
-      missing.push("NVIDIA_API_KEY or LLM_API_KEY");
-    }
+    if (!names.has("NEBIUS_API_KEY")) missing.push("NEBIUS_API_KEY");
+    if (!names.has("COAI_LLM_PROVIDER")) missing.push("COAI_LLM_PROVIDER=nebius");
     if (!names.has("GITHUB_PAT")) missing.push("GITHUB_PAT (current connector requirement)");
     report("Supabase function secrets", missing);
   }
