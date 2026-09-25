@@ -9,7 +9,7 @@ Token Factory Sandbox `POST /instances` lifecycle. It creates a disposable,
 network-disabled instance and treats output as execution evidence only after a
 terminal result is returned.
 
-Required configuration when it is wired into the run queue:
+Required configuration for the queue worker:
 
 - sandbox base URL
 - Nebius IAM token
@@ -35,18 +35,17 @@ PYTHONPATH=worker python -m unittest discover -s worker/tests -v
 
 ## Run the worker
 
-Keep these values in the worker host or secret manager, never in browser environment variables:
+For a Docker host, create a private worker environment file from the template:
 
 ```bash
-export SUPABASE_URL=https://your-project.supabase.co
-export SUPABASE_SERVICE_ROLE_KEY=...
-export NEBIUS_SANDBOX_BASE_URL=https://...
-export NEBIUS_IAM_TOKEN=...
-export NEBIUS_PROJECT_ID=...
-export NEBIUS_SANDBOX_IMAGE=...
-PYTHONPATH=worker python -m coai_worker.main
+cp worker/.env.worker.example worker/.env.worker
+# Fill worker/.env.worker using a local editor or the host's secret manager.
+docker compose --env-file worker/.env.worker -f compose.worker.yaml up -d --build
+docker compose --env-file worker/.env.worker -f compose.worker.yaml logs -f coai-worker
 ```
 
-The queue-claiming service and repository staging are intentionally separate
-from this adapter. They must supply an exact revision, an allowlisted command,
-and a persistent evidence writer.
+The service restarts automatically, runs without Linux capabilities or a
+writable container filesystem, and exposes no inbound port. The populated
+environment file is ignored by git and excluded from the Docker build context.
+Keep these credentials in the worker host's secret manager for hosted
+deployments; never put the service-role or Nebius keys in browser configuration.

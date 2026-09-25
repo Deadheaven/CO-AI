@@ -66,10 +66,12 @@ npm run build
 ## Current limitations
 
 Repository import, isolated verification, and replay export are deployed. The
-remaining launch gates are browser configuration, model/GitHub/Nebius runtime
-secrets, an always-on worker deployment, a live two-user smoke test, and the
-GitHub App installation flow. Replay export excludes repository contents and
-raw executor output.
+remaining launch gates are browser configuration, Nebius and worker-host
+credentials, deploying the always-on worker (a Docker Compose configuration is
+provided), a live two-user smoke test, and the GitHub App installation flow.
+NVIDIA Nemotron and the GitHub PAT compatibility path are configured as
+Supabase Function secrets. Replay export excludes repository contents and raw
+executor output.
 
 ## Contributing
 

@@ -16,6 +16,8 @@ dist-ssr
 .env
 .env.*
 !.env.example
+!worker/.env.worker.example
+worker/.env.worker
 supabase/.temp/
 
 # Editor directories and files
