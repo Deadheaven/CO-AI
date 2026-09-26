@@ -9,9 +9,11 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  *   200 { ok: true, runId }
  *   200 { ok: false, reason: "agent-not-configured" | "already-running" | "bad-request" | "llm-error" }
  *
- * The function is provider-agnostic: it reads NVIDIA_API_KEY (Nemotron) or
- * LLM_API_KEY (OpenAI / Gemini — key format decides) and LLM_MODEL (optional
- * override). NVIDIA models are resolved adaptively: the function fetches the
+ * The function is provider-agnostic: COAI_LLM_PROVIDER=nebius routes Nemotron
+ * through Nebius Token Factory. If unset, NEBIUS_API_KEY takes precedence;
+ * legacy NVIDIA_API_KEY and LLM_API_KEY routing remains available. Nebius
+ * models are resolved against the live Token Factory catalog and must be a
+ * currently listed Nemotron model. NVIDIA models are resolved adaptively: the function fetches the
  * live NIM model catalog with the shared key, picks the best instruction-tuned
  * chat model (nemotron → llama → qwen → …), and retries alternates when one
  * responds 404/410 — so a retired EOL id (like
@@ -25,7 +27,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  * persisted in `pending` state and cannot be merged by this or any other
  * function until evidence + threshold checks pass.
  *
- * Secrets: NVIDIA_API_KEY or LLM_API_KEY (required for real mode),
+ * Secrets: NEBIUS_API_KEY (hackathon mode), NVIDIA_API_KEY or LLM_API_KEY,
  * SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
  * (auto-injected). Never in client code.
  */
@@ -57,10 +59,9 @@ Deno.serve(async (req: Request) => {
   // Verify the caller's JWT (members only; RLS would do this for the anon key,
   // but this function writes with the service role, so we authenticate manually).
   const token = authHeader.replace(/^Bearer\s+/i, "");
-  if (token) {
-    const { error: authErr } = await sb.auth.getUser(token);
-    if (authErr) return json({ ok: false, reason: "bad-request", message: "invalid token" });
-  }
+  if (!token) return json({ ok: false, reason: "unauthorized", message: "authorization required" }, 401);
+  const { data: authData, error: authErr } = await sb.auth.getUser(token);
+  if (authErr || !authData.user) return json({ ok: false, reason: "unauthorized", message: "invalid token" }, 401);
 
   let body: { threadId?: string; runId?: string; prompt?: string; trigger?: string };
   try {
@@ -71,13 +72,34 @@ Deno.serve(async (req: Request) => {
   const { threadId, runId, prompt, trigger } = body;
   if (!threadId || !runId || !prompt) return json({ ok: false, reason: "bad-request", message: "threadId, runId, prompt required" });
 
-  const key = Deno.env.get("NVIDIA_API_KEY") ?? Deno.env.get("LLM_API_KEY");
+  // Service-role writes bypass RLS, so establish both the caller's membership
+  // and the run/thread binding before doing any work.
+  const { data: membership } = await sb
+    .from("thread_members")
+    .select("thread_id")
+    .eq("thread_id", threadId)
+    .eq("member_id", authData.user.id)
+    .maybeSingle();
+  if (!membership) return json({ ok: false, reason: "forbidden", message: "not a thread member" }, 403);
+  const { data: runRow } = await sb.from("agent_runs").select("id,thread_id").eq("id", runId).maybeSingle();
+  if (!runRow || runRow.thread_id !== threadId) {
+    return json({ ok: false, reason: "bad-request", message: "run does not belong to thread" });
+  }
+
+  const nebiusKey = Deno.env.get("NEBIUS_API_KEY");
+  const configuredProvider = (Deno.env.get("COAI_LLM_PROVIDER") ?? "").toLowerCase();
+  const provider = configuredProvider || (nebiusKey ? "nebius" : "");
+  const key = provider === "nebius"
+    ? nebiusKey
+    : Deno.env.get("NVIDIA_API_KEY") ?? Deno.env.get("LLM_API_KEY");
   if (!key) {
     // Graceful "agent not configured": mark the run + thread and stop.
     await sb.from("agent_runs").update({ not_configured: true, state: "blocked" }).eq("id", runId);
     await sb.from("messages").insert({
       thread_id: threadId, author_id: "agent", kind: "agent",
-      body: "Agent not configured — add an NVIDIA (Nemotron) API key (NVIDIA_API_KEY) in Supabase Edge Function secrets to enable real runs.",
+      body: provider === "nebius"
+        ? "Agent not configured — add NEBIUS_API_KEY to the Supabase Edge Function secrets to enable Nemotron through Nebius Token Factory."
+        : "Agent not configured — add an NVIDIA (Nemotron) API key (NVIDIA_API_KEY) in Supabase Edge Function secrets to enable real runs.",
       run_id: runId, meta: "blocked", ts: Date.now(),
     });
     return json({ ok: false, reason: "agent-not-configured" });
@@ -101,30 +123,39 @@ Deno.serve(async (req: Request) => {
     return json({ ok: true, runId, queued: true });
   }
 
-  const keyName = key.startsWith("nvapi-") ? "nvidia" : key.startsWith("sk-") ? "openai" : key.includes(":") ? "gemini" : "openai";
+  const keyName = provider === "nebius"
+    ? "nebius"
+    : key.startsWith("nvapi-") ? "nvidia" : key.startsWith("sk-") ? "openai" : key.includes(":") ? "gemini" : "openai";
   // Model resolution: an explicit LLM_MODEL wins; otherwise NVIDIA adapts to
   // the live catalog (pick-nvidia-models, memoized) with retry alternates so a
   // hardcoded EOL model can never block a run again (the original 410 bug).
-  const llmOverride = Deno.env.get("LLM_MODEL");
+  const llmOverride = keyName === "nebius"
+    ? Deno.env.get("NEBIUS_MODEL_ID")
+    : Deno.env.get("LLM_MODEL");
   let model = llmOverride ?? "";
   let alternates: string[] = [];
-  if (!model) {
-    if (keyName === "gemini") model = "gemini-2.0-flash";
-    else if (keyName === "nvidia") {
-      const picked = await pickNvidiaModel(key);
-      model = picked.model;
-      alternates = picked.alternates;
-    } else model = "gpt-4o-mini";
-  }
-
-  const repoFiles = await fetchThreadFiles(sb, threadId);
-
-  // ---- execute the loop: plan → steps → diffs → qa, persisted live -------
   try {
-    await setStage(sb, runId, "plan");
-    await pushMessage(sb, threadId, runId, "plan", "Planning the work against the harness repo…");
+    if (keyName === "nebius") {
+      model = (await pickNebiusModel(key, llmOverride)).model;
+    } else if (!model) {
+      if (keyName === "gemini") model = "gemini-2.0-flash";
+      else if (keyName === "nvidia") {
+        const picked = await pickNvidiaModel(key);
+        model = picked.model;
+        alternates = picked.alternates;
+      } else model = "gpt-4o-mini";
+    }
 
-    const result = await callLlm({ key, provider: keyName, model, prompt, repoFiles });
+    const repoFiles = await fetchThreadFiles(sb, threadId);
+
+    // ---- execute the loop: plan → steps → diffs → qa, persisted live -------
+    await setStage(sb, runId, "plan");
+    const routeLabel = keyName === "nebius"
+      ? `Planning with ${model} through Nebius Token Factory…`
+      : "Planning the work against the harness repo…";
+    await pushMessage(sb, threadId, runId, "plan", routeLabel);
+
+    const result = await callLlm({ key, provider: keyName, model, prompt, repoFiles, alternates });
     if (!result.ok) throw new Error(result.error);
 
     // steps + plan message
@@ -143,19 +174,31 @@ Deno.serve(async (req: Request) => {
       await sb.from("diffs").insert({
         id: diffId, thread_id: threadId, run_id: runId, path: d.path, label: d.label,
         before: d.before ?? "", after: d.after ?? "", status: "pending", votes: {},
-        evidence: d.evidence ?? { qa: { summary: "", verdict: "pass", checks: [] } },
+        // This function asks a model for a review card but does not execute
+        // commands. It must remain unverified until the sandbox worker writes
+        // executor evidence for this exact revision.
+        evidence: d.evidence ?? { qa: { summary: "No executor evidence recorded.", verdict: "fail", checks: [] } },
+        evidence_source: "unverified",
         ts: Date.now(),
       });
       await pushMessage(sb, threadId, runId, "diff", d.label, diffId);
     }
-    await pushMessage(sb, threadId, runId, "qa", "Self-QA done — diffs are ready for team review, with evidence attached.");
-
-    // review state
-    await setStage(sb, runId, "review");
-    await sb.from("threads").update({ status: "review", ts: Date.now() }).eq("id", threadId);
-    await sb.from("agent_runs").update({ state: "review", queued: false }).eq("id", runId);
-
-    return json({ ok: true, runId });
+    // A model proposal is never treated as executable evidence. Queue it for
+    // the leased sandbox worker, which independently verifies this revision.
+    const { data: threadRow } = await sb.from("threads").select("workspace_id").eq("id", threadId).maybeSingle();
+    const workspaceId = (threadRow as { workspace_id?: string } | null)?.workspace_id;
+    const { data: workspaceRow } = workspaceId
+      ? await sb.from("workspaces").select("verification_command,verification_cwd").eq("id", workspaceId).maybeSingle()
+      : { data: null };
+    const verification = workspaceRow as { verification_command?: string | null; verification_cwd?: string | null } | null;
+    const command = verification?.verification_command ?? null;
+    const cwd = verification?.verification_cwd ?? "/workspace";
+    await sb.from("agent_runs").update({ state: "queue", queued: true, execution_command: command, execution_cwd: cwd }).eq("id", runId);
+    await sb.from("threads").update({ status: "in_progress", ts: Date.now() }).eq("id", threadId);
+    await pushMessage(sb, threadId, runId, "queue", command
+      ? `Proposal ready — sandbox verification queued: ${command}`
+      : "Proposal ready — verification is blocked until a workspace command is configured.");
+    return json({ ok: true, runId, queued: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await setStage(sb, runId, "blocked");
@@ -220,8 +263,8 @@ async function callLlm(opts: {
     "- Plan is 2-4 sentences. Steps are 3-6 actionable checklist items.",
     "- diffs are code changes against the repo files below. before = the exact original file content you are changing (full file), after = the full edited file.",
     "- If a diff cannot be produced safely (missing context), emit a diff with after === before and a QA verdict of 'fail'.",
-    "- Each diff MUST include evidence: a self-QA report with a verdict and checks. Include tests evidence with a plausible command + output when the repo has tests.",
-    "- Be honest: never claim tests pass that you did not reason about.",
+    "- QA is a static review only. Do NOT invent command output, test results, or claim that tests passed.",
+    "- Omit tests unless supplied by an external executor. CO-AI will attach execution evidence separately.",
   ].join("\n");
   const user = `Thread prompt: ${opts.prompt}\n\nHarness repo files:\n${opts.repoFiles}`;
 
@@ -305,6 +348,24 @@ async function callLlm(opts: {
   // NVIDIA NIM (OpenAI-compatible). Model ids change over time (EOL 410s), so
   // we walk a small candidate chain — the catalog pick first, any alternates
   // next — and treat only real model-not-found statuses as retryable.
+  if (opts.provider === "nebius") {
+    const res = await fetch(`${NEBIUS_API}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.key}` },
+      body: JSON.stringify({
+        model: opts.model,
+        messages: [{ role: "system", content: sys }, { role: "user", content: user }],
+        temperature: 0.2,
+        max_tokens: 4096,
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!res.ok) return { ok: false, error: `nebius ${res.status}`, steps: [] };
+    const data = await res.json();
+    const text: string = data?.choices?.[0]?.message?.content ?? "";
+    return parseResult(text);
+  }
+
   if (opts.provider === "nvidia") {
     const candidates = [opts.model, ...(opts.alternates ?? [])];
     let lastErr = "nvidia: no usable model";
@@ -399,6 +460,7 @@ function parseResult(text: string): LlmResult {
 /* ---------------- NVIDIA catalog-driven model selection ---------------- */
 
 const NVIDIA_API = "https://integrate.api.nvidia.com/v1";
+const NEBIUS_API = "https://api.tokenfactory.nebius.com/v1";
 /** Catalog ids that are obviously not chat/instruct models. */
 const NVIDIA_SKIP =
   /(embedding|rerank|re-rank|whisper|tts|asr|stt|audio|speech|vision|image|ocr|paint|canvas|video|segmentation|upscale|scoring|retrieval|guardrail|gec|sdxl|flux|bria|kosmos|jina|nim-embed)/i;
@@ -423,6 +485,40 @@ const NVIDIA_FALLBACK_CHAIN = [
 ];
 
 let nvidiaCatalogCache: { key: string; picked: { model: string; alternates: string[] } } | null = null;
+
+let nebiusCatalogCache: { ids: string[]; fetchedAt: number } | null = null;
+
+/** Select a currently available Nemotron model from Token Factory. An explicit
+ *  id is accepted only when the live catalog confirms it, so a stale id cannot
+ *  silently route the hackathon demo to a different provider or model family. */
+async function pickNebiusModel(key: string, requested?: string): Promise<{ model: string }> {
+  const now = Date.now();
+  let ids = nebiusCatalogCache && now - nebiusCatalogCache.fetchedAt < 5 * 60_000
+    ? nebiusCatalogCache.ids
+    : null;
+  if (!ids) {
+    const res = await fetch(`${NEBIUS_API}/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) throw new Error(`Nebius model catalog request failed (${res.status})`);
+    const data = (await res.json()) as { data?: { id?: string }[] };
+    ids = (data?.data ?? []).map((entry) => entry.id ?? "").filter(Boolean);
+    nebiusCatalogCache = { ids, fetchedAt: now };
+  }
+  const available = ids.filter((id) => /nemotron/i.test(id));
+  const ranked = [...available].sort((a, b) => {
+    const score = (id: string) => /ultra|super/i.test(id) ? 0 : /instruct|thinking/i.test(id) ? 1 : /nano/i.test(id) ? 2 : 3;
+    return score(a) - score(b) || a.localeCompare(b);
+  });
+  const model = requested ?? ranked[0];
+  if (!model || !available.includes(model)) {
+    throw new Error(requested
+      ? `Configured Nebius model is not a listed Nemotron model: ${requested}`
+      : "Nebius Token Factory catalog has no available Nemotron model");
+  }
+  return { model };
+}
 
 /** Query the live NIM catalog (memoized per process) and pick the best
  *  instruction-tuned chat model plus a couple of retry alternates. Falls back

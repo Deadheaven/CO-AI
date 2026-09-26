@@ -104,6 +104,9 @@ export function diffFromRow(r: Row): Diff {
   };
   if (r.comment != null) d.comment = String(r.comment);
   if (r.evidence != null) d.evidence = r.evidence as Diff["evidence"];
+  if (r.evidence_source === "executor" || r.evidence_source === "unverified") {
+    d.evidenceSource = r.evidence_source;
+  }
   if (r.merged != null) d.merged = Boolean(r.merged);
   if (r.pr_number != null) d.prNumber = Number(r.pr_number);
   if (r.branch != null) d.branch = String(r.branch);
@@ -218,7 +221,7 @@ async function bootBackendOnce(): Promise<{ ok: true; snapshot: Snapshot } | { o
         sb.from("agent_runs").select("*"),
         sb.from("approvals").select("diff_id,member_id,verdict"),
         sb.from("presence").select("*"),
-        sb.from("workspaces").select("id,approval_threshold,repo_owner,repo_name,base_branch").limit(1).maybeSingle(),
+        sb.from("workspaces").select("id,approval_threshold,repo_owner,repo_name,base_branch,verification_command,verification_cwd").limit(1).maybeSingle(),
       ]);
 
     const threadRows = (threadsRes.data as Row[] | null) ?? [];
@@ -428,17 +431,12 @@ export async function persistDiff(diff: Diff, evidence?: unknown): Promise<boole
   return !error;
 }
 
-export async function voteOnDiff(diffId: string, memberId: string, verdict: Vote): Promise<boolean> {
+export async function voteOnDiff(diffId: string, verdict: Vote): Promise<boolean> {
   const sb = getSupabase();
   if (!sb) return false;
-  const { data: diffRows } = await sb.from("diffs").select("votes,status").eq("id", diffId).maybeSingle();
-  if (!diffRows) return false;
-  const votes = { ...((diffRows as Row).votes as Record<string, Vote> ?? {}), [memberId]: verdict };
-  const status = verdict === "reject" ? "rejected" : "pending";
-  const { error } = await sb
-    .from("approvals")
-    .upsert({ diff_id: diffId, member_id: memberId, verdict: verdict === "approve" ? "approve" : "reject" });
-  if (!error) await sb.from("diffs").update({ votes, status }).eq("id", diffId);
+  // A transactional RPC owns the normalized approval and status. The old
+  // client read/merge/write of votes could drop a concurrent reviewer's vote.
+  const { error } = await sb.rpc("cast_diff_approval", { p_diff: diffId, p_verdict: verdict });
   return !error;
 }
 
@@ -483,6 +481,8 @@ export function workspaceFromRow(r: Row): WorkspaceSettings {
           baseBranch: String(r.base_branch ?? "main"),
         }
       : null,
+    verification: r.verification_command
+      ? { command: String(r.verification_command), cwd: String(r.verification_cwd ?? "/workspace") } : null,
   };
 }
 
@@ -494,6 +494,8 @@ export async function updateWorkspaceSettings(
     repoOwner?: string | null;
     repoName?: string | null;
     baseBranch?: string | null;
+    verificationCommand?: string | null;
+    verificationCwd?: string | null;
   }
 ): Promise<boolean> {
   const sb = getSupabase();
@@ -503,6 +505,8 @@ export async function updateWorkspaceSettings(
   if (patch.repoOwner !== undefined) payload.repo_owner = patch.repoOwner || null;
   if (patch.repoName !== undefined) payload.repo_name = patch.repoName || null;
   if (patch.baseBranch !== undefined) payload.base_branch = patch.baseBranch || "main";
+  if (patch.verificationCommand !== undefined) payload.verification_command = patch.verificationCommand?.trim() || null;
+  if (patch.verificationCwd !== undefined) payload.verification_cwd = patch.verificationCwd?.trim() || "/workspace";
   const { error } = await sb.from("workspaces").update(payload).eq("id", wsId);
   return !error;
 }
@@ -531,7 +535,52 @@ export async function invokeGhTest(repo?: string): Promise<GhTestResult> {
   }
 }
 
+export interface GhImportResult {
+  ok: boolean;
+  imported?: number;
+  skipped?: number;
+  base?: string;
+  reason?: string;
+  message?: string;
+}
+
+/** Import the connected repository snapshot into one member-owned thread. */
+export async function invokeGhImport(threadId: string): Promise<GhImportResult> {
+  const sb = getSupabase();
+  if (!sb) return { ok: false, reason: "not-configured", message: "Supabase is not configured." };
+  try {
+    const { data, error } = await sb.functions.invoke("coai-gh", { body: { action: "import", threadId } });
+    if (error) return { ok: false, reason: error.message, message: error.message };
+    return (data as GhImportResult) ?? { ok: true };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, reason: "github-error", message: msg };
+
+  }
+}
+
+export interface ReplayExportResult {
+  ok: boolean;
+  data?: Record<string, unknown>;
+  reason?: string;
+  message?: string;
+}
+
+/** Download the authenticated, secret-safe replay record for a thread. */
+export async function invokeReplayExport(threadId: string): Promise<ReplayExportResult> {
+  const sb = getSupabase();
+  if (!sb) return { ok: false, reason: "not-configured", message: "Supabase is not configured." };
+  try {
+    const { data, error } = await sb.functions.invoke("coai-replay", { body: { threadId } });
+    if (error) return { ok: false, reason: error.message, message: error.message };
+    return { ok: true, data: data as Record<string, unknown> };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, reason: "replay-export-error", message: msg };
+  }
+}
 /* ---------- presence (M1 realtime team layer) ---------- */
+
 
 export function presenceFromRow(r: Row): PresenceInfo {
   const memberId = String(r.member_id);

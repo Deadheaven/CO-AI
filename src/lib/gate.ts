@@ -46,6 +46,7 @@ export function hasEvidence(diff: Diff): boolean {
 }
 
 export function hasPassingEvidence(diff: Diff): boolean {
+  if (diff.evidenceSource === "unverified") return false;
   const qa = diff.evidence?.qa;
   if (!qa?.verdict) return false;
   if (qa.verdict !== "pass") return false;
@@ -70,7 +71,7 @@ export function diffGate(
     return { canMerge: false, reason: "This diff was rejected.", approvals, required };
   }
   if (!hasPassingEvidence(diff)) {
-    return { canMerge: false, reason: "Missing passing evidence (self-QA report).", approvals, required };
+    return { canMerge: false, reason: "Missing passing executor evidence.", approvals, required };
   }
   if (approvals < required) {
     return {
