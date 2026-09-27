@@ -20,6 +20,7 @@ import {
 import { Avatar, AvatarStack, Button, CopyButton, EmptyState, LiveDot, StatusPill, cn } from "./ui";
 import { useStore } from "../store";
 import { STATUS_ORDER, buildUnifiedDiff, fmtTime } from "../lib/engine";
+import { invokeGhImport, invokeReplayExport } from "../lib/api";
 import type { ChatMsg, CopilotMsg, Diff, RepoFile, Step, ThreadStatus } from "../types";
 
 /* Module-level constant: stable reference for the empty copilot history,
@@ -402,6 +403,11 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
   const askCopilot = useStore((s) => s.askCopilot);
   const kickstartVotes = useStore((s) => s.kickstartVotes);
   const merge = useStore((s) => s.merge);
+  const workspace = useStore((s) => s.workspace);
+  const [importing, setImporting] = useState(false);
+  const [importMessage, setImportMessage] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [exportMessage, setExportMessage] = useState("");
   const [merging, setMerging] = useState(false);
 
   const [rightOpen, setRightOpen] = useState(true);
@@ -467,6 +473,30 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
     setMerging(false);
   };
 
+  const doImport = async () => {
+    if (!workspace?.repo || importing) return;
+    setImporting(true); setImportMessage("");
+    const result = await invokeGhImport(id);
+    setImporting(false);
+    setImportMessage(result.ok
+      ? `Imported ${result.imported ?? 0} files${result.skipped ? `; skipped ${result.skipped}` : ""}.`
+      : result.message ?? "Repository import failed.");
+  };
+  const doExport = async () => {
+    if (exporting) return;
+    setExporting(true); setExportMessage("");
+    const result = await invokeReplayExport(id);
+    setExporting(false);
+    if (!result.ok || !result.data) { setExportMessage(result.message ?? "Replay export failed."); return; }
+    const blob = new Blob([JSON.stringify(result.data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `co-ai-${id}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setExportMessage("Replay downloaded.");
+  };
   const submit = () => {
     const text = draft.trim();
     if (!text) return;
@@ -487,6 +517,8 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
         </Button>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={() => void doExport()} disabled={exporting}>{exporting ? "Exporting…" : "Export replay"}</Button>
+          {exportMessage && <span className="hidden max-w-32 truncate text-[10px] text-foreground/50 sm:inline" title={exportMessage}>{exportMessage}</span>}
             <h1 className="truncate font-heading text-sm font-bold">{thread.name}</h1>
             <StatusPill status={thread.status} />
             <span className="hidden items-center gap-1.5 rounded-full border border-border px-2 py-0.5 sm:inline-flex">
@@ -502,6 +534,8 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
             {tMembers.filter((m) => m.online).length + (viewer?.online && !tMembers.some((m) => m.id === meId) ? 1 : 0)} online
           </span>
           <AvatarStack members={tMembers} />
+          {workspace?.repo && <Button variant="outline" size="sm" onClick={() => void doImport()} disabled={importing}><FolderOpen size={14} /> {importing ? "Importing…" : "Import repo"}</Button>}
+          {importMessage && <span className="hidden max-w-40 truncate text-[10px] text-foreground/50 sm:inline" title={importMessage}>{importMessage}</span>}
           <Button variant={rightOpen ? "outline" : "ghost"} size="sm" onClick={() => setRightOpen(!rightOpen)} aria-label="Toggle copilot panel">
             <PanelRight size={15} />
           </Button>

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ArrowRight, Bot, Code2, FileDiff, ListChecks, Pencil, Plus, RefreshCw, Terminal, Users } from "lucide-react";
 import { Avatar, AvatarStack, Button, CopyButton, EmptyState, Field, LiveDot, Modal, cn, inputCls } from "./ui";
 import { useStore, isLive } from "../store";
-import { COLORS } from "../lib/api";
+import { COLORS, updateWorkspaceSettings } from "../lib/api";
 import { fmtTime } from "../lib/engine";
 
 export function Logo({ size = 22 }: { size?: number }) {
@@ -28,12 +28,21 @@ export default function Home({
   const createThread = useStore((s) => s.createThread);
   const joinThread = useStore((s) => s.joinThread);
   const updateMe = useStore((s) => s.updateMe);
+  const workspace = useStore((s) => s.workspace);
+  const setWorkspace = useStore((s) => s.setWorkspace);
 
   const live = isLive();
 
   const [createOpen, setCreateOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [verificationOpen, setVerificationOpen] = useState(false);
+  const [verificationCommand, setVerificationCommand] = useState("");
+  const [verificationCwd, setVerificationCwd] = useState("/workspace");
+  const [verificationError, setVerificationError] = useState("");
+  const [repoOwner, setRepoOwner] = useState("");
+  const [repoName, setRepoName] = useState("");
+  const [baseBranch, setBaseBranch] = useState("main");
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [code, setCode] = useState("");
@@ -83,6 +92,29 @@ export default function Home({
     setProfileOpen(false);
   };
 
+  const openVerification = () => {
+    setVerificationCommand(workspace?.verification?.command ?? "");
+    setRepoOwner(workspace?.repo?.owner ?? "");
+    setRepoName(workspace?.repo?.name ?? "");
+    setBaseBranch(workspace?.repo?.baseBranch ?? "main");
+    setVerificationCwd(workspace?.verification?.cwd ?? "/workspace");
+    setVerificationError("");
+    setVerificationOpen(true);
+  };
+  const saveVerification = async () => {
+    const owner = repoOwner.trim(), name = repoName.trim(), branch = baseBranch.trim() || "main";
+    if (!workspace || !verificationCommand.trim() || !verificationCwd.trim().startsWith("/") || (!!owner !== !!name)) { setVerificationError("Enter a command, absolute sandbox directory, and both repo owner/name or neither."); return; }
+
+    const command = verificationCommand.trim(), cwd = verificationCwd.trim();
+    if (!await updateWorkspaceSettings(workspace.id, {
+      verificationCommand: command, verificationCwd: cwd,
+      repoOwner: owner || null, repoName: name || null, baseBranch: branch,
+    })) {
+      setVerificationError("Could not save workspace settings."); return;
+    }
+    setWorkspace({ ...workspace, repo: owner ? { owner, name, baseBranch: branch } : null, verification: { command, cwd } });
+    setVerificationOpen(false);
+  };
   return (
     <div className="flex h-screen flex-col">
       {/* top bar */}
@@ -100,6 +132,9 @@ export default function Home({
           <span className="hidden items-center gap-2 rounded-full border border-border bg-panel px-3 py-1 text-[11px] text-foreground/70 sm:inline-flex">
             <LiveDot /> {onlineCount} online · {live ? "live workspace · synced" : simOn ? "simulated live engine" : "engine off"}
           </span>
+          {live && <Button variant="outline" size="sm" onClick={openVerification} aria-label="Configure sandbox verification">
+            <Terminal size={14} /> Verify
+          </Button>}
           <Button variant="outline" size="sm" onClick={() => setJoinOpen(true)} aria-label="Join a thread by code">
             <Users size={14} /> Join
           </Button>
@@ -340,6 +375,28 @@ export default function Home({
             </div>
           </div>
           <Button variant="primary" onClick={saveProfile}>Save profile</Button>
+        </div>
+      </Modal>
+      <Modal open={verificationOpen} onClose={() => setVerificationOpen(false)} title="Sandbox verification">
+        <div className="flex flex-col gap-3">
+          <Field label="GitHub owner" htmlFor="repo-owner">
+            <input id="repo-owner" className={inputCls} value={repoOwner} onChange={(e) => setRepoOwner(e.target.value)} placeholder="octocat" />
+          </Field>
+          <Field label="GitHub repository" htmlFor="repo-name">
+            <input id="repo-name" className={inputCls} value={repoName} onChange={(e) => setRepoName(e.target.value)} placeholder="hello-world" />
+          </Field>
+          <Field label="Base branch" htmlFor="base-branch">
+            <input id="base-branch" className={inputCls} value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} placeholder="main" />
+          </Field>
+          <Field label="Verification command" htmlFor="verification-command">
+            <input id="verification-command" className={inputCls} value={verificationCommand} onChange={(e) => setVerificationCommand(e.target.value)} placeholder="npm test" autoFocus />
+          </Field>
+          <Field label="Sandbox working directory" htmlFor="verification-cwd">
+            <input id="verification-cwd" className={inputCls} value={verificationCwd} onChange={(e) => setVerificationCwd(e.target.value)} placeholder="/workspace" />
+          </Field>
+          <p className="text-[11px] leading-relaxed text-foreground/50">CO-AI runs this command in a disposable, network-disabled sandbox against the proposed revision.</p>
+          {verificationError && <p className="text-[11px] text-destructive">{verificationError}</p>}
+          <Button variant="primary" onClick={saveVerification}>Save verification command</Button>
         </div>
       </Modal>
     </div>

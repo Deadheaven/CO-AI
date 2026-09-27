@@ -1,0 +1,59 @@
+services:
+  coai-web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:?set VITE_SUPABASE_URL in .env.nebius}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY:?set VITE_SUPABASE_ANON_KEY in .env.nebius}
+    restart: unless-stopped
+    environment:
+      COAI_DOMAIN: ${COAI_DOMAIN:?set COAI_DOMAIN in .env.nebius}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /config/caddy:rw,noexec,nosuid,size=4m
+  coai-worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    user: "65532:65532"
+    init: true
+    restart: unless-stopped
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL:?set SUPABASE_URL in worker/.env.worker}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?set SUPABASE_SERVICE_ROLE_KEY in worker/.env.worker}
+      NEBIUS_SANDBOX_BASE_URL: ${NEBIUS_SANDBOX_BASE_URL:?set NEBIUS_SANDBOX_BASE_URL in worker/.env.worker}
+      NEBIUS_IAM_TOKEN: ${NEBIUS_IAM_TOKEN:?set NEBIUS_IAM_TOKEN in worker/.env.worker}
+      NEBIUS_PROJECT_ID: ${NEBIUS_PROJECT_ID:?set NEBIUS_PROJECT_ID in worker/.env.worker}
+      NEBIUS_SANDBOX_IMAGE: ${NEBIUS_SANDBOX_IMAGE:?set NEBIUS_SANDBOX_IMAGE in worker/.env.worker}
+      COAI_WORKER_ID: ${COAI_WORKER_ID:-coai-worker-1}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:

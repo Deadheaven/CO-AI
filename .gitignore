@@ -8,9 +8,18 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+__pycache__/
+*.py[cod]
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+!.env.nebius.example
+!worker/.env.worker.example
+worker/.env.worker
+supabase/.temp/
 
 # Editor directories and files
 .vscode/*
