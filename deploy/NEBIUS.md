@@ -24,12 +24,13 @@ commands run in Token Factory Sandboxes.
 
 ## 2. Configure Supabase and the VM
 
-In the Supabase Dashboard's Edge Function secrets, add `NEBIUS_API_KEY` and
-`COAI_LLM_PROVIDER` with value `nebius`. Optionally add `NEBIUS_MODEL_ID` with
-an exact ID returned by Token Factory's `/v1/models` endpoint. The model API
-key belongs here; it is separate from the sandbox IAM token. Then, from a
-trusted local shell with the Supabase CLI linked to the project, deploy the
-function:
+In the Supabase Dashboard's Edge Function secrets, add `nebius` with the
+Token Factory inference API key, and add `COAI_LLM_PROVIDER` with value
+`nebius`. The legacy secret name `NEBIUS_API_KEY` is also accepted. Optionally
+add `NEBIUS_MODEL_ID` with an exact ID returned by Token Factory's `/v1/models`
+endpoint. The model API key belongs here; it is separate from the sandbox IAM
+token. Then, from a trusted local shell with the Supabase CLI linked to the
+project, deploy the function:
 
 ```bash
 supabase functions deploy coai-agent

@@ -10,8 +10,9 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  *   200 { ok: false, reason: "agent-not-configured" | "already-running" | "bad-request" | "llm-error" }
  *
  * The function is provider-agnostic: COAI_LLM_PROVIDER=nebius routes Nemotron
- * through Nebius Token Factory. If unset, NEBIUS_API_KEY takes precedence;
- * legacy NVIDIA_API_KEY and LLM_API_KEY routing remains available. Nebius
+ * through Nebius Token Factory. The `nebius` secret is preferred, with
+ * NEBIUS_API_KEY retained as a compatibility alias; legacy NVIDIA_API_KEY and
+ * LLM_API_KEY routing remains available. Nebius
  * models are resolved against the live Token Factory catalog and must be a
  * currently listed Nemotron model. NVIDIA models are resolved adaptively: the function fetches the
  * live NIM model catalog with the shared key, picks the best instruction-tuned
@@ -27,7 +28,8 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  * persisted in `pending` state and cannot be merged by this or any other
  * function until evidence + threshold checks pass.
  *
- * Secrets: NEBIUS_API_KEY (hackathon mode), NVIDIA_API_KEY or LLM_API_KEY,
+ * Secrets: nebius (preferred) or NEBIUS_API_KEY (hackathon mode),
+ * NVIDIA_API_KEY or LLM_API_KEY,
  * SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
  * (auto-injected). Never in client code.
  */
@@ -86,7 +88,7 @@ Deno.serve(async (req: Request) => {
     return json({ ok: false, reason: "bad-request", message: "run does not belong to thread" });
   }
 
-  const nebiusKey = Deno.env.get("NEBIUS_API_KEY");
+  const nebiusKey = Deno.env.get("nebius") ?? Deno.env.get("NEBIUS_API_KEY");
   const configuredProvider = (Deno.env.get("COAI_LLM_PROVIDER") ?? "").toLowerCase();
   const provider = configuredProvider || (nebiusKey ? "nebius" : "");
   const key = provider === "nebius"
@@ -98,7 +100,7 @@ Deno.serve(async (req: Request) => {
     await sb.from("messages").insert({
       thread_id: threadId, author_id: "agent", kind: "agent",
       body: provider === "nebius"
-        ? "Agent not configured — add NEBIUS_API_KEY to the Supabase Edge Function secrets to enable Nemotron through Nebius Token Factory."
+        ? "Agent not configured — add the nebius secret to Supabase Edge Function secrets to enable Nemotron through Nebius Token Factory."
         : "Agent not configured — add an NVIDIA (Nemotron) API key (NVIDIA_API_KEY) in Supabase Edge Function secrets to enable real runs.",
       run_id: runId, meta: "blocked", ts: Date.now(),
     });
