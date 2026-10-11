@@ -38,8 +38,9 @@ function secrets, never as `VITE_` variables. The hackathon route uses Nemotron
 through Nebius Token Factory; it selects a live catalog model or validates the
 configured Nemotron ID before making a request.
 
-Add `NEBIUS_API_KEY` and `COAI_LLM_PROVIDER=nebius` in the Supabase project’s
-Edge Function secrets. Optionally add `NEBIUS_MODEL_ID` with an exact ID
+Add the `nebius` API-key secret and `COAI_LLM_PROVIDER` with value `nebius` in
+the Supabase project’s Edge Function secrets. The legacy `NEBIUS_API_KEY` name
+is also accepted. Optionally add `NEBIUS_MODEL_ID` with an exact ID
 returned by the Token Factory `/v1/models` endpoint. Add the current GitHub
 connector credential as `GITHUB_PAT`. Then deploy the function:
 

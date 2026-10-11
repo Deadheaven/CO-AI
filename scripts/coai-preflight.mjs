@@ -108,7 +108,9 @@ function main() {
   } else {
     const names = new Set(secretItems.map((secret) => secret.name));
     const missing = [];
-    if (!names.has("NEBIUS_API_KEY")) missing.push("NEBIUS_API_KEY");
+    if (!names.has("nebius") && !names.has("NEBIUS_API_KEY")) {
+      missing.push("nebius (or legacy NEBIUS_API_KEY)");
+    }
     if (!names.has("COAI_LLM_PROVIDER")) missing.push("COAI_LLM_PROVIDER=nebius");
     if (!names.has("GITHUB_PAT")) missing.push("GITHUB_PAT (current connector requirement)");
     report("Supabase function secrets", missing);
