@@ -1,57 +1,94 @@
-# Nebius × NVIDIA submission draft
+# Nebius × NVIDIA hackathon submission package
+
+Status: draft for review; do not submit until the public acceptance gates below
+pass. This file is a local preparation artifact, not a Devpost submission.
 
 ## Track
 
-Coding and Agentic Engineering
+Coding and Agentic Engineering.
+
+## Project title
+
+CO-AI — evidence-first collaborative coding
 
 ## Project description
 
-CO-AI gives a small engineering team one shared, reviewable path from a coding
-task to a tested change. Nemotron, served through Nebius Token Factory, turns a
-request into a proposed patch and plan. Teammates review the change together;
-CO-AI stages the exact repository revision in a disposable Nebius Token Factory
-Sandbox and attaches the real test result to that revision. Human approvals are
-bound to the tested patch, and the decision trail can be replayed later.
+CO-AI gives an engineering team one shared trail from a coding request to a
+reviewable, tested patch. A Nemotron model served through Nebius Token Factory
+proposes a plan and code change. CO-AI sends the exact proposed revision to a
+disposable Token Factory Sandbox and attaches the command result to that
+revision. Teammates can inspect the diff, discuss it, approve it, and export a
+replay of the decision trail. The agent's own test claims never count as
+execution evidence. The judge demo uses a small synthetic payment fixture and
+has no connection to an external GitHub repository; GitHub write actions are
+disabled in the public build.
 
-The demo uses a small fixture repository so judges can follow the entire flow:
-request, model proposal, isolated test run, approval, and replay. CO-AI does not
-treat a model's own test claims as execution evidence.
+Use this wording only after the hosted model and sandbox acceptance checks
+pass. Until then, say that the live flow is still being prepared.
 
-Before submission, revise this text to match the live demo exactly and add the
-public demo URL, repository URL, and video URL. Do not claim any stage as live
-until it has passed the hosted acceptance check in `NEBIUS.md`.
+## Links and submission fields
 
-## Video outline (target: 2 minutes 20 seconds)
+- Public demo: pending. Current Sites URL is
+  `https://co-ai-demo.craftypoppy8.chatgpt.site`, but it is private and must
+  not be submitted as judge-accessible until the public audience and full
+  acceptance check are complete.
+- Source repository: https://github.com/Deadheaven/CO-AI . The current local
+  branch has uncommitted submission-readiness changes; publish the reviewed
+  source only after the owner approves the exact GitHub push.
+- YouTube demo under three minutes: pending recording and upload.
+- License: Apache-2.0 (`LICENSE`).
+- Nebius Token Factory feedback: fill in after actual judge-path use.
+- Token Factory Sandboxes feedback: fill in after actual passing and failing
+  sandbox runs.
+- NVIDIA Nemotron feedback: fill in after actual inference use.
+
+## Demo recording outline (about 2 minutes 20 seconds)
 
 | Time | Screen action | Narration |
 | --- | --- | --- |
-| 0:00–0:15 | Show the CO-AI room and a small coding task. | “CO-AI helps a team see how an AI-assisted code change became safe to ship.” |
-| 0:15–0:40 | Two separate sessions join; show the repo and request. | “The team shares one thread, the repository context, and the review trail.” |
-| 0:40–1:05 | Start the agent run; show the planning message with the selected model ID. | “Nemotron is served by Nebius Token Factory. The model ID is visible in the run.” |
-| 1:05–1:35 | Open the proposed diff and show the queued verification. | “The proposal is not treated as proof. CO-AI queues the exact revision for execution.” |
-| 1:35–1:58 | Show the real Nebius Sandbox result and its operation reference. | “The worker stages the files in an isolated Nebius Sandbox and attaches the actual test result to this patch.” |
-| 1:58–2:15 | Show both approvals, then replay/export. | “Approvals bind to the tested revision, and the decision trail remains inspectable.” |
-| 2:15–2:20 | Show repository and public demo URL. | “CO-AI: collaborative coding with evidence you can inspect.” |
+| 0:00–0:15 | Open the public fixture workspace and show its synthetic payment repository. | “CO-AI helps a team inspect how an AI-assisted change was proposed, tested, and reviewed.” |
+| 0:15–0:35 | In two browser sessions, open `DEMO-COAI`; show the failing retry scenario. | “The demo uses a small synthetic repository, so the workflow is easy to follow and isolated from real code.” |
+| 0:35–1:00 | Ask Nemotron through Nebius Token Factory to make the retry-safe change; show the model ID. | “Nemotron proposes the change and plan. Its own test claims are not trusted as proof.” |
+| 1:00–1:30 | Inspect the diff and the queued sandbox run. | “The exact patch is sent to a disposable Token Factory Sandbox for verification.” |
+| 1:30–1:55 | Show the passing result attached to that revision; optionally show the failing case. | “CO-AI records the real command result against this patch revision.” |
+| 1:55–2:15 | Show approvals and replay export. | “The team reviews the evidence and keeps a replayable decision trail. The public demo cannot write to GitHub.” |
+| 2:15–2:20 | Show repository and public demo links. | “CO-AI: collaborative coding with evidence you can inspect.” |
 
-Record only after the live path works. Show the actual model ID, real sandbox
-result, and a blocked failing-test case if time permits. Keep the video under
-three minutes, narrate it, publish it publicly on YouTube, and use only footage
-and audio you have rights to share.
+Record only after the live acceptance check passes. Show the actual model ID,
+sandbox operation evidence, and test result. Keep the video under three minutes,
+make it public on YouTube, and use footage and audio you have rights to share.
 
-## Significant changes since the submission period opened
+## Significant changes since the project period opened
 
-The repository's first commit is dated September 14, 2026; the submission period
-opened August 26, 2026. Check for any earlier private versions before choosing
-the final answer. If there was no earlier version, state that the project was
-started during the submission period. If it did predate the period, describe
-the substantial changes made after August 26, using committed features and live
-demo evidence rather than planned work.
+The current Git history begins on September 14, 2026, after the August 26
+opening date. This supports saying that this repository's project work began
+during the submission period; check for an earlier private version before
+making that claim final. Changes visible in the repository include the live
+agent loop, revision-bound human approvals, executor-backed verification,
+replay export, and split frontend/worker deployment support. Describe only the
+features that pass the hosted acceptance checks as working demo capabilities.
 
-## Required links and feedback
+## Final review gates
 
-- Public demo: TODO after deployment
-- Public source repository: TODO after remote review and publication
-- YouTube demo (under three minutes): TODO after recording
-- Nebius Token Factory feedback: write from actual use
-- Nebius Sandboxes / AI Cloud feedback: write from actual use
-- NVIDIA Nemotron feedback: write from actual use
+- [ ] Apply migration `0011_public_demo_guards.sql` and deploy the updated Edge
+  Functions; confirm the synthetic fixture workspace loads for a new anonymous
+  browser identity.
+- [ ] Configure the worker only on a confirmed zero-cash host or separately
+  verified AI Cloud credits. The standard Token Factory promo credit does not
+  establish VM credit coverage.
+- [ ] Confirm a real Nemotron model ID and a passing sandbox run; run a
+  deliberately failing command and confirm it is not represented as passing
+  evidence.
+- [ ] Verify the public run cap, prompt cap, disabled GitHub endpoints, and
+  inability to change the public workspace repository or verification command.
+- [ ] Verify two independent browser sessions, approvals, replay export, and
+  fresh-page reload.
+- [ ] Publish the source changes only after approval of the exact GitHub diff;
+  confirm the repository and license are public and the pushed source matches
+  the demo.
+- [ ] Change the Sites audience to public and verify judge access from a clean
+  browser session.
+- [ ] Record and publish the under-three-minute YouTube video; enter actual
+  product feedback and final links.
+- [ ] Review the final text against the live official rules immediately before
+  submission. Devpost submission remains a separate user action.

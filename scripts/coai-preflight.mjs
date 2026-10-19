@@ -3,7 +3,7 @@ import fs from "node:fs";
 import process from "node:process";
 
 const live = process.argv.includes("--live");
-const migrationVersions = Array.from({ length: 10 }, (_, index) =>
+const migrationVersions = Array.from({ length: 11 }, (_, index) =>
   String(index + 1).padStart(4, "0"),
 );
 const localMigrations = fs.readdirSync("supabase/migrations");
@@ -26,6 +26,18 @@ function envNamesFromFile(path) {
   return names;
 }
 
+function envValue(name, paths) {
+  if (process.env[name] !== undefined) return process.env[name];
+  for (const path of paths) {
+    if (!fs.existsSync(path)) continue;
+    for (const line of fs.readFileSync(path, "utf8").split(/\r?\n/)) {
+      const match = line.match(new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=\\s*(.*?)\\s*$`));
+      if (match) return match[1].replace(/^("|')(.*)\1$/, "$2").trim();
+    }
+  }
+  return undefined;
+}
+
 function parseCliJson(stdout) {
   try {
     return JSON.parse(stdout.trim());
@@ -38,6 +50,16 @@ function listItems(value, key) {
   if (Array.isArray(value)) return value;
   if (Array.isArray(value?.[key])) return value[key];
   return null;
+}
+
+function hasSitesStaticManifest() {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(".openai/hosting.json", "utf8"));
+    return typeof manifest.project_id === "string" &&
+      typeof manifest.static?.directory === "string";
+  } catch {
+    return false;
+  }
 }
 
 function supabaseCli(args) {
@@ -58,7 +80,7 @@ function report(label, missing) {
 function main() {
   console.log(`CO-AI preflight (${live ? "linked deployment" : "local"})`);
   console.log(
-    `local migrations: ${missingLocalMigrations.length ? `missing ${missingLocalMigrations.join(", ")}` : "0001-0010 present"}`,
+    `local migrations: ${missingLocalMigrations.length ? `missing ${missingLocalMigrations.join(", ")}` : "0001-0011 present"}`,
   );
   if (missingLocalMigrations.length) process.exitCode = 1;
 
@@ -78,8 +100,16 @@ function main() {
   const workerNames = new Set([...shellNames, ...envNamesFromFile("worker/.env.worker")]);
   report("browser config", [
     ...["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY"].filter((name) => !browserNames.has(name)),
-    ...["COAI_DOMAIN"].filter((name) => !browserNames.has(name)),
   ]);
+  const publicDemoValue = envValue("VITE_COAI_PUBLIC_DEMO", [".env.local", ".env.nebius"]);
+  report("public demo frontend mode", publicDemoValue === "true" ? [] : ["VITE_COAI_PUBLIC_DEMO=true"]);
+  if (hasSitesStaticManifest()) {
+    console.log("frontend host config: Sites static manifest present (COAI_DOMAIN not required)");
+  } else {
+    report("combined Nebius frontend config", [
+      ...["COAI_DOMAIN"].filter((name) => !browserNames.has(name)),
+    ]);
+  }
   report("worker host config", [
     ...[
       "SUPABASE_URL",
@@ -112,6 +142,7 @@ function main() {
       missing.push("nebius (or legacy NEBIUS_API_KEY)");
     }
     if (!names.has("COAI_LLM_PROVIDER")) missing.push("COAI_LLM_PROVIDER=nebius");
+    if (!names.has("COAI_PUBLIC_DEMO")) missing.push("COAI_PUBLIC_DEMO=true");
     if (!names.has("GITHUB_PAT")) missing.push("GITHUB_PAT (current connector requirement)");
     report("Supabase function secrets", missing);
   }

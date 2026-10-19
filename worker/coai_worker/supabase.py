@@ -55,6 +55,9 @@ class SupabaseWorkerGateway:
     def append_event(self, worker_id: str, run_id: str, event_type: str, payload: Mapping[str, Any]) -> None:
         self._rpc("append_worker_event", {"p_worker_id": worker_id, "p_run": run_id, "p_event_type": event_type, "p_payload": payload})
 
+    def renew_lease(self, worker_id: str, run_id: str, lease_seconds: int = 90) -> None:
+        self._rpc("renew_worker_lease", {"p_worker_id": worker_id, "p_run": run_id, "p_lease_seconds": lease_seconds})
+
     def record_evidence(self, worker_id: str, run_id: str, diff_id: str, evidence: ExecutorEvidence) -> None:
         self._rpc("record_executor_evidence", {"p_worker_id": worker_id, "p_run": run_id, "p_diff": diff_id,
           "p_command": evidence.command, "p_passed": evidence.passed, "p_output": evidence.output,

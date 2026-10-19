@@ -62,6 +62,9 @@ Deno.serve(async (req: Request) => {
   }
   const { threadId, action } = body ?? {};
   if (!action) return json({ ok: false, reason: "bad-request", message: "action required" });
+  if (Deno.env.get("COAI_PUBLIC_DEMO") === "true") {
+    return json({ ok: false, reason: "public-demo-disabled", message: "GitHub repository access is disabled in the guided public demo." }, 403);
+  }
 
   const pat = Deno.env.get("GITHUB_PAT") ?? "";
 

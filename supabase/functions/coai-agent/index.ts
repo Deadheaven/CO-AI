@@ -72,7 +72,9 @@ Deno.serve(async (req: Request) => {
     return json({ ok: false, reason: "bad-request", message: "invalid json" });
   }
   const { threadId, runId, prompt, trigger } = body;
-  if (!threadId || !runId || !prompt) return json({ ok: false, reason: "bad-request", message: "threadId, runId, prompt required" });
+  if (typeof threadId !== "string" || !threadId || typeof runId !== "string" || !runId || typeof prompt !== "string" || !prompt.trim()) {
+    return json({ ok: false, reason: "bad-request", message: "threadId, runId, and prompt are required" });
+  }
 
   // Service-role writes bypass RLS, so establish both the caller's membership
   // and the run/thread binding before doing any work.
@@ -82,7 +84,19 @@ Deno.serve(async (req: Request) => {
     .eq("thread_id", threadId)
     .eq("member_id", authData.user.id)
     .maybeSingle();
-  if (!membership) return json({ ok: false, reason: "forbidden", message: "not a thread member" }, 403);
+  const publicDemo = Deno.env.get("COAI_PUBLIC_DEMO") === "true";
+  let allowedDemoThread = false;
+  if (publicDemo && !membership) {
+    const { data: publicThread } = await sb.from("threads").select("workspace_id").eq("id", threadId).maybeSingle();
+    if (publicThread?.workspace_id) {
+      const { data: demoWorkspace } = await sb.from("workspaces").select("id").eq("id", publicThread.workspace_id).eq("public_demo", true).maybeSingle();
+      allowedDemoThread = Boolean(demoWorkspace);
+    }
+  }
+  if (!membership && !allowedDemoThread) return json({ ok: false, reason: "forbidden", message: "not a thread member" }, 403);
+  if (publicDemo) {
+    if (prompt.length > 1000) return json({ ok: false, reason: "prompt-too-long", message: "Public demo prompts are limited to 1,000 characters." }, 413);
+  }
   const { data: runRow } = await sb.from("agent_runs").select("id,thread_id").eq("id", runId).maybeSingle();
   if (!runRow || runRow.thread_id !== threadId) {
     return json({ ok: false, reason: "bad-request", message: "run does not belong to thread" });
@@ -91,6 +105,9 @@ Deno.serve(async (req: Request) => {
   const nebiusKey = Deno.env.get("nebius") ?? Deno.env.get("NEBIUS_API_KEY");
   const configuredProvider = (Deno.env.get("COAI_LLM_PROVIDER") ?? "").toLowerCase();
   const provider = configuredProvider || (nebiusKey ? "nebius" : "");
+  if (publicDemo && provider !== "nebius") {
+    return json({ ok: false, reason: "public-demo-provider-required", message: "The public demo requires Nemotron through Nebius Token Factory." }, 503);
+  }
   const key = provider === "nebius"
     ? nebiusKey
     : Deno.env.get("NVIDIA_API_KEY") ?? Deno.env.get("LLM_API_KEY");
@@ -157,7 +174,7 @@ Deno.serve(async (req: Request) => {
       : "Planning the work against the harness repo…";
     await pushMessage(sb, threadId, runId, "plan", routeLabel);
 
-    const result = await callLlm({ key, provider: keyName, model, prompt, repoFiles, alternates });
+    const result = await callLlm({ key, provider: keyName, model, prompt, repoFiles, alternates, maxTokens: publicDemo ? 2048 : 4096 });
     if (!result.ok) throw new Error(result.error);
 
     // steps + plan message
@@ -255,7 +272,7 @@ interface LlmResult {
 
 /** One structured LLM call producing plan/steps/diffs/qa in strict JSON. */
 async function callLlm(opts: {
-  key: string; provider: string; model: string; prompt: string; repoFiles: string; alternates?: string[];
+  key: string; provider: string; model: string; prompt: string; repoFiles: string; alternates?: string[]; maxTokens?: number;
 }): Promise<LlmResult> {
   const sys = [
     "You are the CO-AI engineering agent working on a team thread.",
@@ -358,7 +375,7 @@ async function callLlm(opts: {
         model: opts.model,
         messages: [{ role: "system", content: sys }, { role: "user", content: user }],
         temperature: 0.2,
-        max_tokens: 4096,
+        max_tokens: opts.maxTokens ?? 4096,
       }),
       signal: AbortSignal.timeout(120_000),
     });
@@ -379,7 +396,7 @@ async function callLlm(opts: {
           model: m,
           messages: [{ role: "system", content: sys }, { role: "user", content: user }],
           temperature: 0.2,
-          max_tokens: 4096,
+        max_tokens: opts.maxTokens ?? 4096,
         }),
       });
       if (res.ok) {

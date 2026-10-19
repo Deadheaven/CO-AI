@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
+import time
 from typing import Protocol
 
 from .evidence import evidence_from_result
@@ -40,11 +42,34 @@ class VerificationWorker:
             return RunOutcome(run.run_id, "blocked")
         self._gateway.append_event(self._worker_id, run.run_id, "verification-started", {"command": run.execution_command, "file_count": len(run.files)})
         try:
-            result = self._executor.run(run.execution_command, cwd=run.execution_cwd, files=dict(run.files))
+            renew = getattr(self._gateway, "renew_lease", None)
+            stop = threading.Event()
+            lost_lease = threading.Event()
+            def heartbeat() -> None:
+                while not stop.wait(25):
+                    if not callable(renew):
+                        continue
+                    try:
+                        renew(self._worker_id, run.run_id, 90)
+                    except Exception:
+                        lost_lease.set()
+                        return
+            keeper = threading.Thread(target=heartbeat, name=f"lease-{run.run_id}", daemon=True)
+            keeper.start()
+            try:
+                result = self._executor.run(run.execution_command, cwd=run.execution_cwd, files=dict(run.files))
+            finally:
+                stop.set()
+                keeper.join(timeout=2)
         except (SandboxError, ValueError) as error:
             self._gateway.append_event(self._worker_id, run.run_id, "verification-failed", {"reason": str(error)[:300]})
             self._gateway.finish(self._worker_id, run.run_id, False)
             return RunOutcome(run.run_id, "blocked")
+        if lost_lease.is_set():
+            # A result without a live lease cannot be recorded as trusted
+            # evidence. Leave the run for operator recovery instead of racing
+            # a worker that may have reclaimed it.
+            return RunOutcome(run.run_id, "lease-lost")
         evidence = evidence_from_result(run.execution_command, result)
         for diff_id in run.diff_ids:
             self._gateway.record_evidence(self._worker_id, run.run_id, diff_id, evidence)
