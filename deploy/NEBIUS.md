@@ -16,10 +16,11 @@ credits-only budget.
    inbound TCP ports 80 and 443. Restrict SSH (TCP 22) to your own IP.
 3. Install Docker Engine with the Compose plugin on the VM. Create a deploy
    account that can run Docker and write to `/opt/co-ai`.
-4. In Token Factory, create an API key for inference. Separately configure
-   Token Factory Sandboxes access and select an approved sandbox image. The
-   worker requires an IAM bearer token and the Nebius Project ID for the
-   sandbox service; these are distinct from the Token Factory inference key.
+4. In Token Factory, create an API key in the project that will run Sandboxes.
+   Activate Sandboxes for that project and caller, then select an approved
+   image. The worker accepts `NEBIUS_API_KEY` and needs the Token Factory
+   Project ID. An inference key alone does not establish Sandbox permission.
+   See the current [access setup](https://docs.tokenfactory.nebius.com/sandboxes/start/set-up-access).
 5. In Supabase Auth settings, enable anonymous sign-ins. CO-AI creates an
    anonymous identity per browser session; verify that two separate sessions
    can use the guided fixture thread.
@@ -56,7 +57,7 @@ creation, joining, and merge controls.
 
 On the VM, create `/opt/co-ai/worker/.env.worker` from
 `worker/.env.worker.example`. Configure the Supabase URL and service-role key,
-the Sandbox API base URL, IAM token, Project ID, and approved image. Keep it
+the Sandbox API base URL, Sandbox-enabled API key, Project ID, and approved image. Keep it
 mode `0600` and ensure the deploy account owns it. Never place the service-role
 key or Nebius secrets in browser configuration.
 

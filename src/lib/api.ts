@@ -130,6 +130,14 @@ export function runFromRow(r: Row): AgentRun {
   return run;
 }
 
+/** Turn abandoned verifier queue entries into an explicit blocked state. */
+export async function expireStaleVerificationRuns(): Promise<void> {
+  const sb = getSupabase();
+  if (!sb) return;
+  const { error } = await sb.rpc("expire_stale_verification_runs");
+  if (error) console.warn("[co-ai] could not reconcile stale verification queue:", error.message);
+}
+
 /**
  * Single-flight wrapper for bootBackendOnce. Dev StrictMode mounts run
  * initStore() twice back-to-back; without this, two concurrent

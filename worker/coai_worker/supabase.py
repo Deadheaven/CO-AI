@@ -43,8 +43,10 @@ class SupabaseWorkerGateway:
         self._config = config
         self._open = opener
 
-    def claim(self, worker_id: str, lease_seconds: int = 90) -> ClaimedRun | None:
-        rows = self._rpc("claim_agent_run", {"p_worker_id": worker_id, "p_lease_seconds": lease_seconds})
+    def claim(self, worker_id: str, lease_seconds: int = 90, run_id: str | None = None) -> ClaimedRun | None:
+        rows = self._rpc("claim_agent_run", {"p_worker_id": worker_id, "p_lease_seconds": lease_seconds, "p_run_id": run_id})
+        if not isinstance(rows, list) or not all(isinstance(item, Mapping) for item in rows):
+            raise QueueError("claim RPC returned an invalid row set")
         if not rows: return None
         if len(rows) != 1: raise QueueError("claim RPC returned more than one run")
         row = rows[0]
@@ -53,20 +55,27 @@ class SupabaseWorkerGateway:
           _diff_ids(row), _patched_files(row))
 
     def append_event(self, worker_id: str, run_id: str, event_type: str, payload: Mapping[str, Any]) -> None:
-        self._rpc("append_worker_event", {"p_worker_id": worker_id, "p_run": run_id, "p_event_type": event_type, "p_payload": payload})
+        value = self._rpc("append_worker_event", {"p_worker_id": worker_id, "p_run": run_id, "p_event_type": event_type, "p_payload": payload})
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise QueueError("append event RPC did not return a sequence number")
 
     def renew_lease(self, worker_id: str, run_id: str, lease_seconds: int = 90) -> None:
-        self._rpc("renew_worker_lease", {"p_worker_id": worker_id, "p_run": run_id, "p_lease_seconds": lease_seconds})
+        self._expect_void("renew_worker_lease", {"p_worker_id": worker_id, "p_run": run_id, "p_lease_seconds": lease_seconds})
 
     def record_evidence(self, worker_id: str, run_id: str, diff_id: str, evidence: ExecutorEvidence) -> None:
-        self._rpc("record_executor_evidence", {"p_worker_id": worker_id, "p_run": run_id, "p_diff": diff_id,
+        self._expect_void("record_executor_evidence", {"p_worker_id": worker_id, "p_run": run_id, "p_diff": diff_id,
           "p_command": evidence.command, "p_passed": evidence.passed, "p_output": evidence.output,
           "p_truncated": evidence.truncated, "p_operation_url": evidence.operation_url})
 
     def finish(self, worker_id: str, run_id: str, passed: bool) -> None:
-        self._rpc("finish_worker_run", {"p_worker_id": worker_id, "p_run": run_id, "p_passed": passed})
+        self._expect_void("finish_worker_run", {"p_worker_id": worker_id, "p_run": run_id, "p_passed": passed})
 
-    def _rpc(self, name: str, payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    def _expect_void(self, name: str, payload: Mapping[str, Any]) -> None:
+        value = self._rpc(name, payload)
+        if value not in (None, [], ""):
+            raise QueueError(f"Supabase RPC {name} returned an unexpected value")
+
+    def _rpc(self, name: str, payload: Mapping[str, Any]) -> Any:
         request = Request(self._config.url.rstrip("/") + "/rest/v1/rpc/" + name, data=json.dumps(payload).encode(), method="POST",
           headers={"apikey": self._config.service_role_key, "Authorization": f"Bearer {self._config.service_role_key}", "Content-Type": "application/json", "Accept": "application/json"})
         try:
@@ -76,8 +85,8 @@ class SupabaseWorkerGateway:
             raise QueueError(f"Supabase RPC {name} failed with HTTP {error.code}") from error
         except (URLError, json.JSONDecodeError) as error:
             raise QueueError(f"Supabase RPC {name} failed") from error
-        if not isinstance(data, list) or not all(isinstance(item, Mapping) for item in data):
-            raise QueueError(f"Supabase RPC {name} returned an invalid payload")
+        if isinstance(data, list) and not all(isinstance(item, Mapping) for item in data):
+            raise QueueError(f"Supabase RPC {name} returned an invalid row set")
         return data
 
 

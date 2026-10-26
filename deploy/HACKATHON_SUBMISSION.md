@@ -3,6 +3,12 @@
 Status: draft for review; do not submit until the public acceptance gates below
 pass. This file is a local preparation artifact, not a Devpost submission.
 
+October 27 update: see [SUBMISSION_STATUS.md](SUBMISSION_STATUS.md) and
+`evidence/` for verified deployment and acceptance results. One bounded live
+Nemotron proposal and passing queue-backed Sandbox run now work end to end;
+the resulting diff awaits human review. The Site remains restricted to its
+owner, and the final submission gates are listed in the status file.
+
 ## Track
 
 Coding and Agentic Engineering.
@@ -70,15 +76,23 @@ features that pass the hosted acceptance checks as working demo capabilities.
 
 ## Final review gates
 
-- [ ] Apply migration `0011_public_demo_guards.sql` and deploy the updated Edge
+- [x] Apply migration `0011_public_demo_guards.sql` and deploy the updated Edge
   Functions; confirm the synthetic fixture workspace loads for a new anonymous
   browser identity.
+- [x] Repair and deploy the proposal/verification queue, stale-run recovery,
+  transactional reviews, and realtime collaboration updates (migrations
+  `0012`–`0016`). Verify source-revision checks and review gates in rolled-back
+  PostgreSQL transactions.
+- [x] Verify two fresh browser sessions, shared live chat, reload persistence,
+  replay download, desktop/mobile layout, and protected fixture files. The
+  inference/worker execution checks below remain separate.
 - [ ] Configure the worker only on a confirmed zero-cash host or separately
   verified AI Cloud credits. The standard Token Factory promo credit does not
   establish VM credit coverage.
-- [ ] Confirm a real Nemotron model ID and a passing sandbox run; run a
-  deliberately failing command and confirm it is not represented as passing
-  evidence.
+- [x] Confirm a real Nemotron model ID and one passing queue-backed sandbox
+  run; see `evidence/queue-backed-nemotron-run.json`.
+- [ ] Run a deliberately failing command and confirm it is not represented as
+  passing evidence.
 - [ ] Verify the public run cap, prompt cap, disabled GitHub endpoints, and
   inability to change the public workspace repository or verification command.
 - [ ] Verify two independent browser sessions, approvals, replay export, and

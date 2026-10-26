@@ -13,7 +13,7 @@ from .supabase import ClaimedRun
 
 
 class Gateway(Protocol):
-    def claim(self, worker_id: str, lease_seconds: int = 90) -> ClaimedRun | None: ...
+    def claim(self, worker_id: str, lease_seconds: int = 90, run_id: str | None = None) -> ClaimedRun | None: ...
     def append_event(self, worker_id: str, run_id: str, event_type: str, payload: dict[str, object]) -> None: ...
     def record_evidence(self, worker_id: str, run_id: str, diff_id: str, evidence: object) -> None: ...
     def finish(self, worker_id: str, run_id: str, passed: bool) -> None: ...
@@ -33,8 +33,8 @@ class VerificationWorker:
     def __init__(self, worker_id: str, gateway: Gateway, executor: Executor) -> None:
         self._worker_id, self._gateway, self._executor = worker_id, gateway, executor
 
-    def run_once(self) -> RunOutcome:
-        run = self._gateway.claim(self._worker_id)
+    def run_once(self, run_id: str | None = None) -> RunOutcome:
+        run = self._gateway.claim(self._worker_id) if run_id is None else self._gateway.claim(self._worker_id, run_id=run_id)
         if run is None: return RunOutcome(None, "idle")
         if not run.execution_command or not run.diff_ids:
             self._gateway.append_event(self._worker_id, run.run_id, "verification-blocked", {"reason": "missing command or diff"})

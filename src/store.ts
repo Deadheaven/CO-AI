@@ -197,7 +197,7 @@ function recountGates(threadId: string): void {
   const flipped: Diff[] = [];
   const diffs = st.diffs.map((d) => {
     if (d.threadId !== threadId || d.status !== "pending") return d;
-    if (!diffGate(d, team, DEFAULT_POLICY).canMerge) return d;
+    if (!diffGate(d, team, st.workspace?.approvalThreshold ?? DEFAULT_POLICY).canMerge) return d;
     const nd = { ...d, status: "approved" as const };
     flipped.push(nd);
     return nd;
@@ -227,7 +227,7 @@ function shipThread(threadId: string): boolean {
   if (threadDiffs.some((d) => d.status !== "approved")) return false;
 
   const team = threadTeamSize(thread, st.members);
-  const gate = threadGate(threadDiffs, team, DEFAULT_POLICY);
+  const gate = threadGate(threadDiffs, team, st.workspace?.approvalThreshold ?? DEFAULT_POLICY);
   if (!gate.canMerge) return false;
 
   const diffs = st.diffs.map((d) => (d.threadId === threadId ? { ...d, status: "approved" as const, merged: true } : d));
@@ -416,7 +416,16 @@ export const useStore = create<CoAIState>()(
         set((s) => ({
           diffs: s.diffs.map((d) => (d.id === diffId ? { ...d, votes, status, comment: comment ?? d.comment } : d)),
         }));
-        if (live) void voteOnDiff(diffId, verdict);
+        if (live) {
+          void voteOnDiff(diffId, verdict).then(async (saved) => {
+            if (saved) { await resyncLive(); return; }
+            set((s) => ({
+              diffs: s.diffs.map((d) => d.id === diffId ? diff : d),
+              messages: [...s.messages, mkMsg(diff.threadId, AGENT_ID, "system", "Your review could not be saved. Please try again.")],
+            }));
+          });
+          return;
+        }
         const thread = st.threads.find((t) => t.id === diff.threadId);
         if (verdict === "reject" && thread) {
           const rejectMsg = mkMsg(thread.id, st.meId, "chat", comment ? `Rejected: ${comment}` : "Rejected — let's rework this diff.");
@@ -436,6 +445,7 @@ export const useStore = create<CoAIState>()(
       },
 
       botVote: (diffId, memberId) => {
+        if (live) return;
         const st = get();
         const diff = st.diffs.find((d) => d.id === diffId);
         if (!diff) return;
@@ -458,7 +468,7 @@ export const useStore = create<CoAIState>()(
         if (!thread) return false;
         const threadDiffs = st.diffs.filter((d) => d.threadId === threadId);
         const team = threadTeamSize(thread, st.members);
-        const gate = threadGate(threadDiffs, team, DEFAULT_POLICY);
+        const gate = threadGate(threadDiffs, team, st.workspace?.approvalThreshold ?? DEFAULT_POLICY);
         if (!gate.canMerge) {
           // structural: never unlock without the gate
           useStore.setState((s) => ({
@@ -638,7 +648,7 @@ export const useStore = create<CoAIState>()(
 
       kickstartVotes: (threadId) => {
         const st = get();
-        if (!st.simOn) return;
+        if (live || !st.simOn) return;
         const pending = st.diffs.filter((d) => d.threadId === threadId && d.status === "pending");
         if (!pending.length) return;
         pending.forEach((diff) => {
@@ -850,6 +860,16 @@ function applyRealtimeEvent(ev: RealtimeEvent): void {
       });
       break;
     }
+    case "thread_members": {
+      const threadId = String(row.thread_id ?? "");
+      const memberId = String(row.member_id ?? "");
+      if (!threadId || !memberId) break;
+      useStore.setState({ threads: st.threads.map((thread) => thread.id !== threadId ? thread : {
+        ...thread,
+        memberIds: event === "DELETE" ? thread.memberIds.filter((id) => id !== memberId) : [...new Set([...thread.memberIds, memberId])],
+      }) });
+      break;
+    }
     case "messages": {
       if (!row.id) break;
       if (event === "DELETE") {
@@ -874,7 +894,9 @@ function applyRealtimeEvent(ev: RealtimeEvent): void {
       if (event === "DELETE") {
         useStore.setState({ diffs: st.diffs.filter((x) => x.id !== id) });
       } else {
-        useStore.setState({ diffs: upsertById(st.diffs, diffFromRow(row)) });
+        const updated = diffFromRow(row);
+        const existing = st.diffs.find((d) => d.id === id);
+        useStore.setState({ diffs: upsertById(st.diffs, { ...updated, votes: { ...updated.votes, ...existing?.votes } }) });
       }
       break;
     }
@@ -902,7 +924,8 @@ function applyRealtimeEvent(ev: RealtimeEvent): void {
     case "threads": {
       if (!row.id) break;
       const thread = threadFromRow(row);
-      useStore.setState({ threads: upsertById(st.threads, thread).sort((a, b) => b.ts - a.ts) });
+      const existing = st.threads.find((t) => t.id === thread.id);
+      useStore.setState({ threads: upsertById(st.threads, { ...thread, memberIds: existing?.memberIds ?? thread.memberIds }).sort((a, b) => b.ts - a.ts) });
       break;
     }
     default:

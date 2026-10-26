@@ -6,12 +6,12 @@ CO-AI turns a task into a reviewable decision trail: request, planned patch,
 human feedback, execution evidence, revision-bound approvals, and a GitHub PR.
 It is built for small engineering teams, not autonomous deployment.
 
-> Status: hosted submission in progress. The existing Sites frontend remains
-> private. A guarded synthetic public fixture and its Supabase migration are
-> prepared locally; the migration, Edge Functions, worker, and public access
-> still need deployment and live acceptance before judges can use the demo.
-> The hosted approval gate intentionally rejects model-authored test output;
-> executor-backed evidence is required before a live merge can unlock.
+> Status: hosted submission in progress. The Sites frontend and Supabase
+> backend are active. One live Nemotron proposal and queue-backed passing
+> Sandbox run are verified; the patch is awaiting human review. The current
+> worker is local, and the public access, failing-run, video, and submission
+> gates are tracked in [deploy/SUBMISSION_STATUS.md](deploy/SUBMISSION_STATUS.md).
+> The approval gate requires executor-backed evidence for the exact revision.
 
 ## Run locally
 
@@ -100,12 +100,13 @@ It caps runs at two per anonymous identity and ten total per UTC day, limits
 prompts to 1,000 characters, and limits generated output to 2,048 tokens. This
 is a request cap, not a monetary budget meter.
 
-The migration, function updates, and worker lease-renewal changes are local and
-have not been deployed or exercised against the hosted stack. The Sites URL is
-still private, and this checkout has no configured worker host. Live Token
-Factory inference, passing and failing sandbox runs, two-user review, replay,
-and public judge access remain acceptance gates. Replay export excludes
-repository contents and raw executor output.
+Migrations `0011`–`0016` and the updated Edge Functions are deployed. One live
+Nemotron proposal has passed the configured tests in a disposable Sandbox. The
+`payments.py` diff remains pending human review. The current worker runs locally
+and is not an always-on judging host. A deliberately failing Sandbox run,
+live reviewer approvals, a monetary usage limit, and public judge acceptance
+remain open. Replay export excludes repository contents and raw executor
+output.
 
 ## Contributing
 

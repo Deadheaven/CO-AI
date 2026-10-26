@@ -1,0 +1,23 @@
+{
+  "checked_at": "2026-10-26T16:48:57.547Z",
+  "execution_attempted": true,
+  "inference_attempted": false,
+  "image_tag": "python:3.12-slim",
+  "image_uuid": "4fa16c8f-62a9-35a4-a4ea-07b7e8cd44ae",
+  "networking_enabled": false,
+  "command": "python -c 'numbers = [3, 5, 8, 13]; print(\"sum:\", sum(numbers))'",
+  "exit_code": 0,
+  "timed_out": false,
+  "stdout": "sum: 29\n",
+  "stderr": "",
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "passed": true,
+  "operation_id": "01a1791d-6ec8-7727-b1ad-3f76138eae60",
+  "provider_status": "SUCCESS",
+  "provider_signal_raw": -1,
+  "normalized_signal": null,
+  "signal_interpretation": "No terminating signal: the provider reports -1 on this exit-0 operation; the field is documented as the signal that caused termination, if any.",
+  "evidence_note": "The adapter initially rejected the provider signal sentinel; fixed and covered by the passing focused adapter suite.",
+  "adapter_reparse_checked_at": "2026-10-26T16:54:13.204629+00:00"
+}

@@ -1,0 +1,17 @@
+{
+  "checked_on": "2026-10-25",
+  "target": "linked Supabase PostgreSQL",
+  "checks": {
+    "atomic_proposal_and_queue": "passed",
+    "duplicate_run_reservation": "passed",
+    "worker_success_and_failure_transitions": "passed",
+    "repeat_revision_in_a_later_run": "passed",
+    "stale_source_rejected": "passed",
+    "authenticated_stale_run_expiry": "passed",
+    "unverified_approval_rejected": "passed",
+    "two_distinct_reviews_persist": "passed",
+    "rejection_locks_merge_gate": "passed"
+  },
+  "execution": "Each regression ran inside a transaction that was rolled back.",
+  "sandbox_execution": "Not attempted. Synthetic executor evidence was used only as a rolled-back contract fixture."
+}
