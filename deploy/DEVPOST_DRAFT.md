@@ -75,15 +75,15 @@ Factory, Nebius Sandboxes, NVIDIA Nemotron.
 
 ## Links
 
-- Source: https://github.com/Deadheaven/CO-AI — publish the reviewed changes first.
-- Demo: https://co-ai-demo.craftypoppy8.chatgpt.site — owner-only until public
-  access is approved and verified.
+- Source: https://github.com/Deadheaven/CO-AI/tree/fix/nebius-secret-alias —
+  reviewed source branch, commit `a52e84e`.
+- Demo: https://co-ai-demo.craftypoppy8.chatgpt.site — public Site version 3.
 - Video: pending actual recording and public YouTube upload, under three minutes.
 
 ## Testing instructions
 
-After public access is enabled: open the demo and select “Fix duplicate charges
-on retry.” Use “Try this request” to prepare the guided prompt, then send it.
+Open the public demo and select “Fix duplicate charges on retry.” Use “Try
+this request” to prepare the guided prompt, then send it.
 Inspect the proposed `payments.py` diff and expand its sandbox evidence.
 Open a second independent browser session to inspect the same result and
 record a second review. Use “Export replay” to download the decision trail.

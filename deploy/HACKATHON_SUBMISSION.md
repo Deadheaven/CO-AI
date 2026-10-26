@@ -6,8 +6,8 @@ pass. This file is a local preparation artifact, not a Devpost submission.
 October 27 update: see [SUBMISSION_STATUS.md](SUBMISSION_STATUS.md) and
 `evidence/` for verified deployment and acceptance results. One bounded live
 Nemotron proposal and passing queue-backed Sandbox run now work end to end;
-the resulting diff awaits human review. The Site remains restricted to its
-owner, and the final submission gates are listed in the status file.
+the resulting diff awaits human review. The Site is now public; the remaining
+submission gates are listed in the status file.
 
 ## Track
 
@@ -34,13 +34,10 @@ pass. Until then, say that the live flow is still being prepared.
 
 ## Links and submission fields
 
-- Public demo: pending. Current Sites URL is
-  `https://co-ai-demo.craftypoppy8.chatgpt.site`, but it is private and must
-  not be submitted as judge-accessible until the public audience and full
-  acceptance check are complete.
-- Source repository: https://github.com/Deadheaven/CO-AI . The current local
-  branch has uncommitted submission-readiness changes; publish the reviewed
-  source only after the owner approves the exact GitHub push.
+- Public demo: https://co-ai-demo.craftypoppy8.chatgpt.site (public Site v3;
+  full judge-flow browser acceptance remains pending).
+- Source repository: https://github.com/Deadheaven/CO-AI/tree/fix/nebius-secret-alias
+  (reviewed branch at commit `a52e84e`).
 - YouTube demo under three minutes: pending recording and upload.
 - License: Apache-2.0 (`LICENSE`).
 - Nebius Token Factory feedback: fill in after actual judge-path use.
@@ -97,11 +94,11 @@ features that pass the hosted acceptance checks as working demo capabilities.
   inability to change the public workspace repository or verification command.
 - [ ] Verify two independent browser sessions, approvals, replay export, and
   fresh-page reload.
-- [ ] Publish the source changes only after approval of the exact GitHub diff;
-  confirm the repository and license are public and the pushed source matches
-  the demo.
-- [ ] Change the Sites audience to public and verify judge access from a clean
-  browser session.
+- [x] Push the reviewed source to the public repository branch
+  `fix/nebius-secret-alias` at commit `a52e84e`; the repository and license are
+  public.
+- [x] Change the Sites audience to public; an unauthenticated request returned
+  HTTP 200. Full judge-flow browser acceptance remains pending.
 - [ ] Record and publish the under-three-minute YouTube video; enter actual
   product feedback and final links.
 - [ ] Review the final text against the live official rules immediately before

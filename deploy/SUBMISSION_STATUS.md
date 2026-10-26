@@ -50,23 +50,24 @@ submission remain outstanding.
 - The worker-only Compose configuration now accepts the configured
   `NEBIUS_API_KEY` name (with legacy `NEBIUS_IAM_TOKEN` fallback); the local
   worker container is running. This is not an always-on remote host.
-- The active Sites version remains v3 and access mode is `custom`, with only
-  the owner allowlisted. No source push, audience change, video upload, or
-  Devpost submission has been made.
+- The active Sites version remains v3. Access mode is now `public` (policy
+  revision 2), and an unauthenticated request to the live URL returned HTTP
+  200. Evidence: `evidence/public-access.json`.
+- Reviewed source was pushed to public repository branch
+  `fix/nebius-secret-alias` at commit `a52e84e7e16dd41ae964c7777be83656bf4d0c6d`.
+  No video upload or Devpost submission has been made.
 
 ## Remaining before submission
 
 1. Run a deliberately failing sandbox command and confirm it cannot produce
    passing evidence. The real passing run above is complete.
-2. Confirm the remaining Nebius credit balance and choose a monetary limit
-   before opening judge access. Daily request caps do not establish a dollar
-   spending limit.
+2. Confirm the remaining Nebius credit balance and set a monetary limit while
+   the Site is public. Daily request caps do not establish a dollar spending
+   limit.
 3. Deploy the worker to a confirmed credits-only/zero-cash host for judging;
    the current local container is temporary.
-4. Verify two real reviewers can act on passing evidence, then reload and
-   confirm the final review state.
-5. Review the current private Site and source diff, then approve public judge
-   access and the exact source-repository push.
+4. Verify the full judge flow from a clean browser, including two real
+   reviewers, protected fixture settings, reload, and replay export.
 6. Record an actual demo under three minutes, publish it on YouTube, complete
    product feedback from observed use, and enter final links on Devpost.
 

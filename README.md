@@ -9,8 +9,8 @@ It is built for small engineering teams, not autonomous deployment.
 > Status: hosted submission in progress. The Sites frontend and Supabase
 > backend are active. One live Nemotron proposal and queue-backed passing
 > Sandbox run are verified; the patch is awaiting human review. The current
-> worker is local, and the public access, failing-run, video, and submission
-> gates are tracked in [deploy/SUBMISSION_STATUS.md](deploy/SUBMISSION_STATUS.md).
+> worker is local; the failing-run, live-review, video, and submission gates
+> are tracked in [deploy/SUBMISSION_STATUS.md](deploy/SUBMISSION_STATUS.md).
 > The approval gate requires executor-backed evidence for the exact revision.
 
 ## Run locally
@@ -104,9 +104,9 @@ Migrations `0011`–`0016` and the updated Edge Functions are deployed. One live
 Nemotron proposal has passed the configured tests in a disposable Sandbox. The
 `payments.py` diff remains pending human review. The current worker runs locally
 and is not an always-on judging host. A deliberately failing Sandbox run,
-live reviewer approvals, a monetary usage limit, and public judge acceptance
-remain open. Replay export excludes repository contents and raw executor
-output.
+live reviewer approvals, a monetary usage limit, and full judge-flow browser
+acceptance remain open. The active Site is public. Replay export excludes
+repository contents and raw executor output.
 
 ## Contributing
 
