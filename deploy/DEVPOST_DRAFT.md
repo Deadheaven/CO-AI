@@ -77,8 +77,8 @@ Factory, Nebius Sandboxes, NVIDIA Nemotron.
 
 - Source: https://github.com/Deadheaven/CO-AI/tree/fix/nebius-secret-alias —
   reviewed source branch, commit `a52e84e`.
-- Demo: https://co-ai-demo.craftypoppy8.chatgpt.site — public Site version 3.
-- Video: pending actual recording and public YouTube upload, under three minutes.
+- Demo: https://co-ai-demo.craftypoppy8.chatgpt.site — public Site version 4.
+- Video: 2:01 MP4 created locally; public/unlisted YouTube or Vimeo upload pending.
 
 ## Testing instructions
 

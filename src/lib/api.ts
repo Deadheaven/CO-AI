@@ -69,7 +69,10 @@ export function msgFromRow(r: Row): ChatMsg {
     id: String(r.id),
     threadId: String(r.thread_id),
     authorId: String(r.author_id ?? "system"),
-    kind: (r.kind as ChatMsg["kind"]) ?? "chat",
+    // Agent-produced proposal messages are stored as agent/meta=diff rows.
+    // Render their linked revision as a review card, including executor evidence.
+    kind: r.kind === "agent" && r.meta === "diff" && r.diff_id != null
+      ? "diff" : (r.kind as ChatMsg["kind"]) ?? "chat",
     ts: Number(r.ts ?? 0),
   };
   if (r.body != null) m.body = String(r.body);

@@ -2,9 +2,9 @@
 
 The final Devpost submission has not been made. A bounded live Nemotron
 proposal now completed end to end through the local worker and Nebius Sandbox.
-The resulting diff is pending human review. Public judge access, a deliberately
-failing Sandbox check, continuous worker hosting, video, and final Devpost
-submission remain outstanding.
+The resulting diff is pending human review. A deliberately failing Sandbox
+check, continuous worker hosting, video upload, and final Devpost submission
+remain outstanding. Gallery images and a two-minute demo video are created.
 
 ## Verified today
 
@@ -50,12 +50,21 @@ submission remain outstanding.
 - The worker-only Compose configuration now accepts the configured
   `NEBIUS_API_KEY` name (with legacy `NEBIUS_IAM_TOKEN` fallback); the local
   worker container is running. This is not an always-on remote host.
-- The active Sites version remains v3. Access mode is now `public` (policy
+- The active Sites version is v4. Access mode is `public` (policy
   revision 2), and an unauthenticated request to the live URL returned HTTP
   200. Evidence: `evidence/public-access.json`.
 - Reviewed source was pushed to public repository branch
   `fix/nebius-secret-alias` at commit `a52e84e7e16dd41ae964c7777be83656bf4d0c6d`.
   No video upload or Devpost submission has been made.
+- Oct 28 media capture found that agent/meta=diff messages were rendered as
+  text, hiding their linked review cards. The mapping fix passed three focused
+  regressions, typecheck/build, and public browser verification. Site v4 shows
+  the real diff, saved passing output, and pending review controls.
+- Four actual gallery PNGs (3:2, each under 5 MB), a 2:01 narrated MP4, a silent
+  captioned MP4, and captions/narration text are prepared locally in
+  `~/coai-submission-media/`. The walkthrough uses the saved completed run,
+  casts no review votes, and sends no new model request. Video upload remains
+  pending. See `evidence/media-acceptance.json`.
 
 ## Remaining before submission
 
@@ -68,8 +77,8 @@ submission remain outstanding.
    the current local container is temporary.
 4. Verify the full judge flow from a clean browser, including two real
    reviewers, protected fixture settings, reload, and replay export.
-6. Record an actual demo under three minutes, publish it on YouTube, complete
-   product feedback from observed use, and enter final links on Devpost.
+6. Upload the created 2:01 demo to YouTube/Vimeo as public or unlisted, complete
+   product feedback, and enter its final URL on Devpost.
 
 Official rules checked October 25:
 https://nebiusglobalaihackathon.devpost.com/rules . The listed deadline is

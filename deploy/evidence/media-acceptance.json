@@ -1,0 +1,43 @@
+{
+  "captured_at": "2026-10-27T18:52:00.086Z",
+  "site_version": 4,
+  "site_source_commit": "8d71213df3dd2e7ae0261a505c65d82e9ff19737",
+  "browser_runtime_errors": [],
+  "gallery": [
+    {
+      "file": "01-workspace.png",
+      "width": 1500,
+      "height": 1000,
+      "bytes": 136776
+    },
+    {
+      "file": "02-guided-thread.png",
+      "width": 1500,
+      "height": 1000,
+      "bytes": 152226
+    },
+    {
+      "file": "03-proposed-diff.png",
+      "width": 1050,
+      "height": 700,
+      "bytes": 98129
+    },
+    {
+      "file": "04-sandbox-evidence.png",
+      "width": 1050,
+      "height": 700,
+      "bytes": 76762
+    }
+  ],
+  "video_seconds": 121.18231292517007,
+  "video_resolution": "1920x1080",
+  "video_codec": "H.264",
+  "audio_codec": "AAC",
+  "narration": "synthetic offline speech",
+  "full_video_decode": "passed",
+  "new_model_requests": 0,
+  "review_votes_cast": 0,
+  "video_upload": "pending",
+  "presentation": "Actual screen recording with close-ups from the same public app",
+  "audio_sample_rate_hz": 48000
+}

@@ -34,11 +34,11 @@ pass. Until then, say that the live flow is still being prepared.
 
 ## Links and submission fields
 
-- Public demo: https://co-ai-demo.craftypoppy8.chatgpt.site (public Site v3;
+- Public demo: https://co-ai-demo.craftypoppy8.chatgpt.site (public Site v4;
   full judge-flow browser acceptance remains pending).
 - Source repository: https://github.com/Deadheaven/CO-AI/tree/fix/nebius-secret-alias
   (reviewed branch at commit `a52e84e`).
-- YouTube demo under three minutes: pending recording and upload.
+- YouTube demo under three minutes: 2:01 video created; upload pending.
 - License: Apache-2.0 (`LICENSE`).
 - Nebius Token Factory feedback: fill in after actual judge-path use.
 - Token Factory Sandboxes feedback: fill in after actual passing and failing
@@ -99,7 +99,7 @@ features that pass the hosted acceptance checks as working demo capabilities.
   public.
 - [x] Change the Sites audience to public; an unauthenticated request returned
   HTTP 200. Full judge-flow browser acceptance remains pending.
-- [ ] Record and publish the under-three-minute YouTube video; enter actual
-  product feedback and final links.
+- [x] Create four actual gallery screenshots and a 2:01 captioned demo video.
+- [ ] Upload the video to YouTube/Vimeo; enter actual product feedback and links.
 - [ ] Review the final text against the live official rules immediately before
   submission. Devpost submission remains a separate user action.
