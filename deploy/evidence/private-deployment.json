@@ -1,0 +1,12 @@
+{
+  "deployed_on": "2026-10-25",
+  "site_version": 3,
+  "site_url": "https://co-ai-demo.craftypoppy8.chatgpt.site",
+  "source_commit": "5d45bfeecb585d7ed97bc36a528e0d5069e740f7",
+  "deployment_status": "succeeded",
+  "audience": "custom, owner only",
+  "supabase_migrations": "0001-0016",
+  "supabase_agent_updated": true,
+  "inference": "not attempted in this session",
+  "sandbox": "not attempted"
+}

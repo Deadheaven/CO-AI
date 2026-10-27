@@ -1,0 +1,13 @@
+{
+  "checked_on": "2026-10-27",
+  "run_id": "0dc3937c-83de-4221-b6ef-83ef1bb2548d",
+  "model_id": "nvidia/nemotron-3-super-120b-a12b",
+  "diff_path": "payments.py",
+  "diff_status": "pending human review",
+  "sandbox_image_id": "4fa16c8f-62a9-35a4-a4ea-07b7e8cd44ae",
+  "sandbox_operation_id": "01a1799f-0852-7794-a46b-2cd9a6ba0b32",
+  "command": "python -m unittest",
+  "command_passed": true,
+  "output_truncated": false,
+  "run_terminal_state": "review"
+}

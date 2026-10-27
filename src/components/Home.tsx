@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ArrowRight, Bot, Code2, FileDiff, ListChecks, Pencil, Plus, RefreshCw, Terminal, Users } from "lucide-react";
 import { Avatar, AvatarStack, Button, CopyButton, EmptyState, Field, LiveDot, Modal, cn, inputCls } from "./ui";
-import { useStore, isLive } from "../store";
+import { useStore, isLive, isPublicDemo } from "../store";
 import { COLORS, updateWorkspaceSettings } from "../lib/api";
 import { fmtTime } from "../lib/engine";
 
@@ -32,6 +32,7 @@ export default function Home({
   const setWorkspace = useStore((s) => s.setWorkspace);
 
   const live = isLive();
+  const publicDemo = isPublicDemo();
 
   const [createOpen, setCreateOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
@@ -132,21 +133,21 @@ export default function Home({
           <span className="hidden items-center gap-2 rounded-full border border-border bg-panel px-3 py-1 text-[11px] text-foreground/70 sm:inline-flex">
             <LiveDot /> {onlineCount} online · {live ? "live workspace · synced" : simOn ? "simulated live engine" : "engine off"}
           </span>
-          {live && <Button variant="outline" size="sm" onClick={openVerification} aria-label="Configure sandbox verification">
+          {live && !publicDemo && <Button variant="outline" size="sm" onClick={openVerification} aria-label="Configure sandbox verification">
             <Terminal size={14} /> Verify
           </Button>}
-          <Button variant="outline" size="sm" onClick={() => setJoinOpen(true)} aria-label="Join a thread by code">
+          {!publicDemo && <Button variant="outline" size="sm" onClick={() => setJoinOpen(true)} aria-label="Join a thread by code">
             <Users size={14} /> Join
-          </Button>
-          <Button variant="primary" size="sm" onClick={() => setCreateOpen(true)} aria-label="Create a new thread">
+          </Button>}
+          {!publicDemo && <Button variant="primary" size="sm" onClick={() => setCreateOpen(true)} aria-label="Create a new thread">
             <Plus size={14} /> New thread
-          </Button>
+          </Button>}
         </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">
         {/* left rail: threads */}
-        <aside className="flex w-72 shrink-0 flex-col overflow-hidden border-r border-border/70 bg-canvas/40">
+        <aside className="hidden w-72 shrink-0 flex-col overflow-hidden border-r border-border/70 bg-canvas/40 md:flex">
           <div className="flex items-center justify-between px-4 pb-2 pt-4">
             <span className="text-[10px] font-bold uppercase tracking-widest text-foreground/45">Lines of work</span>
             {!live && (
@@ -210,16 +211,18 @@ export default function Home({
         <main className="flex-1 overflow-y-auto scroll-thin">
           <div className="mx-auto max-w-3xl px-6 py-10">
             <div className="rise">
+              {publicDemo && <div className="mb-5 rounded-xl border border-accent/30 bg-accent/8 px-4 py-3 text-xs leading-relaxed text-foreground/70">
+                Guided public demo: explore the prepared fixture thread, inspect its diffs and replay, and try an agent request. Repository settings, imports, and GitHub write actions are disabled.
+              </div>}
               <h1 className="font-heading text-3xl font-bold leading-tight tracking-tight">
                 One thread.
                 <br />
-                <span className="text-accent">Your team. An agent that ships.</span>
+                <span className="text-accent">Your team. A patch you can verify.</span>
               </h1>
               <p className="mt-3 max-w-xl text-sm leading-relaxed text-foreground/60">
-                CO-AI is a harness thread: the place where your team and an AI agent
-                work a single line of work together, live. The agent plans, writes code
-                as reviewable diffs, QAs itself — and the whole team rides along, chats,
-                and approves before anything ships.
+                Work with an AI agent in one shared thread. Review its plan and code
+                changes, inspect the sandbox test results, then approve or reject the
+                exact patch with your team. Export a replay of the decisions.
               </p>
             </div>
 
@@ -228,7 +231,7 @@ export default function Home({
                 { icon: <ListChecks size={16} />, v: threads.length, l: "threads" },
                 { icon: <FileDiff size={16} />, v: pendingCount, l: "diffs in review" },
                 { icon: <Users size={16} />, v: onlineCount, l: "members online" },
-                { icon: <Bot size={16} />, v: live ? "on" : "sim", l: "agent on harness" },
+                { icon: <Bot size={16} />, v: live ? "live" : "sim", l: "workspace" },
               ].map((c) => (
                 <div key={c.l} className="rounded-xl border border-border bg-panel p-3">
                   <div className="flex items-center gap-2 text-accent">{c.icon}<span className="font-heading text-lg font-bold text-foreground">{c.v}</span></div>
@@ -240,9 +243,9 @@ export default function Home({
             <div className="mt-8">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-xs font-bold uppercase tracking-widest text-foreground/55">Your threads</h2>
-                <Button variant="outline" size="sm" onClick={() => setCreateOpen(true)}>
+                {!publicDemo && <Button variant="outline" size="sm" onClick={() => setCreateOpen(true)}>
                   <Plus size={14} /> Start a line of work
-                </Button>
+                </Button>}
               </div>
               {threads.length === 0 ? (
                 <EmptyState icon={<Code2 size={22} />} title="Nothing here yet" hint="Create a thread and the agent will start planning with you." />
@@ -295,7 +298,7 @@ export default function Home({
                   <>
                     <p className="text-xs font-semibold">Live workspace connected</p>
                     <p className="text-[11px] text-foreground/50">
-                      Supabase is on — anonymous identity, threads, messages, diffs, and your profile persist and sync with your team. The real agent harness plugs in next.
+                      Your shared thread, messages, proposed changes, and reviews persist across reloads. Open the fixture above to inspect the work and its verification status.
                     </p>
                   </>
                 ) : (
@@ -307,12 +310,12 @@ export default function Home({
                   </>
                 )}
               </div>
-              <Button variant="outline" size="sm" onClick={() => setSim(!simOn)}>
+              {!live && <Button variant="outline" size="sm" onClick={() => setSim(!simOn)}>
                 {simOn ? "pause sim" : "resume sim"}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setJoinOpen(true)}>
+              </Button>}
+              {!publicDemo && <Button variant="ghost" size="sm" onClick={() => setJoinOpen(true)}>
                 try a share code
-              </Button>
+              </Button>}
             </div>
           </div>
         </main>

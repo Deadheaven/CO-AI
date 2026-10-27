@@ -72,7 +72,9 @@ Deno.serve(async (req: Request) => {
     return json({ ok: false, reason: "bad-request", message: "invalid json" });
   }
   const { threadId, runId, prompt, trigger } = body;
-  if (!threadId || !runId || !prompt) return json({ ok: false, reason: "bad-request", message: "threadId, runId, prompt required" });
+  if (typeof threadId !== "string" || !threadId || typeof runId !== "string" || !runId || typeof prompt !== "string" || !prompt.trim()) {
+    return json({ ok: false, reason: "bad-request", message: "threadId, runId, and prompt are required" });
+  }
 
   // Service-role writes bypass RLS, so establish both the caller's membership
   // and the run/thread binding before doing any work.
@@ -82,49 +84,52 @@ Deno.serve(async (req: Request) => {
     .eq("thread_id", threadId)
     .eq("member_id", authData.user.id)
     .maybeSingle();
-  if (!membership) return json({ ok: false, reason: "forbidden", message: "not a thread member" }, 403);
-  const { data: runRow } = await sb.from("agent_runs").select("id,thread_id").eq("id", runId).maybeSingle();
+  const publicDemo = Deno.env.get("COAI_PUBLIC_DEMO") === "true";
+  let allowedDemoThread = false;
+  if (publicDemo && !membership) {
+    const { data: publicThread } = await sb.from("threads").select("workspace_id").eq("id", threadId).maybeSingle();
+    if (publicThread?.workspace_id) {
+      const { data: demoWorkspace } = await sb.from("workspaces").select("id").eq("id", publicThread.workspace_id).eq("public_demo", true).maybeSingle();
+      allowedDemoThread = Boolean(demoWorkspace);
+    }
+  }
+  if (!membership && !allowedDemoThread) return json({ ok: false, reason: "forbidden", message: "not a thread member" }, 403);
+  if (publicDemo) {
+    if (prompt.length > 1000) return json({ ok: false, reason: "prompt-too-long", message: "Public demo prompts are limited to 1,000 characters." }, 413);
+  }
+  const { data: runRow, error: runLookupError } = await sb.from("agent_runs").select("id,thread_id,state,queued").eq("id", runId).maybeSingle();
+  if (runLookupError) return json({ ok: false, reason: "database-error", message: "Could not load the run." }, 503);
   if (!runRow || runRow.thread_id !== threadId) {
     return json({ ok: false, reason: "bad-request", message: "run does not belong to thread" });
+  }
+  if (runRow.state !== "queue" || runRow.queued) {
+    return json({ ok: false, reason: "already-running", message: "This run has already started or finished." }, 409);
   }
 
   const nebiusKey = Deno.env.get("nebius") ?? Deno.env.get("NEBIUS_API_KEY");
   const configuredProvider = (Deno.env.get("COAI_LLM_PROVIDER") ?? "").toLowerCase();
   const provider = configuredProvider || (nebiusKey ? "nebius" : "");
+  if (publicDemo && provider !== "nebius") {
+    return json({ ok: false, reason: "public-demo-provider-required", message: "The public demo requires Nemotron through Nebius Token Factory." }, 503);
+  }
   const key = provider === "nebius"
     ? nebiusKey
     : Deno.env.get("NVIDIA_API_KEY") ?? Deno.env.get("LLM_API_KEY");
   if (!key) {
     // Graceful "agent not configured": mark the run + thread and stop.
-    await sb.from("agent_runs").update({ not_configured: true, state: "blocked" }).eq("id", runId);
-    await sb.from("messages").insert({
+    const { error: updateError } = await sb.from("agent_runs").update({ not_configured: true, state: "blocked", queued: false }).eq("id", runId);
+    const { error: messageError } = await sb.from("messages").insert({
       thread_id: threadId, author_id: "agent", kind: "agent",
       body: provider === "nebius"
         ? "Agent not configured — add the nebius secret to Supabase Edge Function secrets to enable Nemotron through Nebius Token Factory."
         : "Agent not configured — add an NVIDIA (Nemotron) API key (NVIDIA_API_KEY) in Supabase Edge Function secrets to enable real runs.",
       run_id: runId, meta: "blocked", ts: Date.now(),
     });
+    if (updateError || messageError) return json({ ok: false, reason: "database-error", message: "The run could not be saved." }, 503);
     return json({ ok: false, reason: "agent-not-configured" });
   }
 
   // ---- run queue: one active run per thread -------------------------------
-  const { data: active } = await sb
-    .from("agent_runs")
-    .select("id")
-    .eq("thread_id", threadId)
-    .in("state", ["queue", "plan", "write", "qa", "review"])
-    .limit(1);
-  const running = (active as { id: string }[] | null)?.find((r) => r.id !== runId);
-  if (running) {
-    await sb.from("agent_runs").update({ queued: true, state: "queue" }).eq("id", runId);
-    await sb.from("messages").insert({
-      thread_id: threadId, author_id: "agent", kind: "agent",
-      body: `Queued — another run is active on this thread. It will pick up when that run finishes.`,
-      run_id: runId, meta: "queue", ts: Date.now(),
-    });
-    return json({ ok: true, runId, queued: true });
-  }
-
   const keyName = provider === "nebius"
     ? "nebius"
     : key.startsWith("nvapi-") ? "nvidia" : key.startsWith("sk-") ? "openai" : key.includes(":") ? "gemini" : "openai";
@@ -136,6 +141,12 @@ Deno.serve(async (req: Request) => {
     : Deno.env.get("LLM_MODEL");
   let model = llmOverride ?? "";
   let alternates: string[] = [];
+  const { data: reserved, error: reserveError } = await sb.rpc("begin_agent_run", { p_thread: threadId, p_run: runId });
+  if (reserveError) return json({ ok: false, reason: "database-error", message: "Could not reserve this thread for the run." }, 503);
+  if (reserved !== true) {
+    // A duplicate invocation must not change the winning invocation's state.
+    return json({ ok: false, reason: "already-running", message: "Another request is already preparing or verifying this thread." }, 409);
+  }
   try {
     if (keyName === "nebius") {
       model = (await pickNebiusModel(key, llmOverride)).model;
@@ -157,50 +168,46 @@ Deno.serve(async (req: Request) => {
       : "Planning the work against the harness repo…";
     await pushMessage(sb, threadId, runId, "plan", routeLabel);
 
-    const result = await callLlm({ key, provider: keyName, model, prompt, repoFiles, alternates });
+    const result = await callLlm({ key, provider: keyName, model, prompt, repoFiles, alternates, maxTokens: publicDemo ? 2048 : 4096 });
     if (!result.ok) throw new Error(result.error);
 
     // steps + plan message
     await setStage(sb, runId, "write");
-    const stepRows = result.steps.map((title: string, i: number) => ({
-      id: crypto.randomUUID(), thread_id: threadId, title, status: i === 0 ? "active" : "todo",
-      owner_id: "agent", sort_order: i, ts: Date.now(),
-    }));
-    await sb.from("steps").insert(stepRows);
     await pushMessage(sb, threadId, runId, "plan", `Plan ready:\n${result.steps.map((s: string, i: number) => `${i + 1}. ${s}`).join("\n")}`);
 
     // diffs + evidence
     await setStage(sb, runId, "qa");
-    for (const d of result.diffs) {
-      const diffId = crypto.randomUUID();
-      await sb.from("diffs").insert({
-        id: diffId, thread_id: threadId, run_id: runId, path: d.path, label: d.label,
-        before: d.before ?? "", after: d.after ?? "", status: "pending", votes: {},
-        // This function asks a model for a review card but does not execute
-        // commands. It must remain unverified until the sandbox worker writes
-        // executor evidence for this exact revision.
-        evidence: d.evidence ?? { qa: { summary: "No executor evidence recorded.", verdict: "fail", checks: [] } },
-        evidence_source: "unverified",
-        ts: Date.now(),
-      });
-      await pushMessage(sb, threadId, runId, "diff", d.label, diffId);
-    }
     // A model proposal is never treated as executable evidence. Queue it for
     // the leased sandbox worker, which independently verifies this revision.
-    const { data: threadRow } = await sb.from("threads").select("workspace_id").eq("id", threadId).maybeSingle();
+    const { data: threadRow, error: threadError } = await sb.from("threads").select("workspace_id").eq("id", threadId).maybeSingle();
+    if (threadError) throw new Error("Could not load workspace verification settings.");
     const workspaceId = (threadRow as { workspace_id?: string } | null)?.workspace_id;
-    const { data: workspaceRow } = workspaceId
+    const { data: workspaceRow, error: workspaceError } = workspaceId
       ? await sb.from("workspaces").select("verification_command,verification_cwd").eq("id", workspaceId).maybeSingle()
-      : { data: null };
+      : { data: null, error: null };
+    if (workspaceError || (workspaceId && !workspaceRow)) throw new Error("Could not load workspace verification settings.");
     const verification = workspaceRow as { verification_command?: string | null; verification_cwd?: string | null } | null;
     const command = verification?.verification_command ?? null;
     const cwd = verification?.verification_cwd ?? "/workspace";
-    await sb.from("agent_runs").update({ state: "queue", queued: true, execution_command: command, execution_cwd: cwd }).eq("id", runId);
-    await sb.from("threads").update({ status: "in_progress", ts: Date.now() }).eq("id", threadId);
+    const { data: proposal, error: proposalError } = await sb.rpc("save_agent_proposal", {
+      p_thread: threadId, p_run: runId, p_steps: result.steps,
+      p_diffs: result.diffs.map((d) => ({ ...d, before: d.before ?? "", after: d.after ?? "" })),
+      p_command: command ?? "", p_cwd: cwd,
+    });
+    if (proposalError || !proposal || typeof proposal !== "object") throw new Error("Could not persist the proposal; it was not queued for verification.");
+    const saved = proposal as { diff_ids?: unknown; queued?: unknown };
+    if (!Array.isArray(saved.diff_ids) || saved.diff_ids.length !== result.diffs.length) throw new Error("The database did not confirm every proposed change.");
+    for (let i = 0; i < result.diffs.length; i++) {
+      const diffId = saved.diff_ids[i];
+      if (typeof diffId !== "string") throw new Error("The database returned an invalid proposal reference.");
+      await pushMessage(sb, threadId, runId, "diff", result.diffs[i].label, diffId);
+    }
+    const { error: threadUpdateError } = await sb.from("threads").update({ ts: Date.now() }).eq("id", threadId);
+    if (threadUpdateError) throw new Error("The proposal was saved but the thread could not be refreshed.");
     await pushMessage(sb, threadId, runId, "queue", command
-      ? `Proposal ready — sandbox verification queued: ${command}`
-      : "Proposal ready — verification is blocked until a workspace command is configured.");
-    return json({ ok: true, runId, queued: true });
+      ? `Proposal ready — waiting for a sandbox verifier: ${command}`
+      : "Proposal saved, but sandbox verification is blocked until a workspace command is configured.");
+    return json({ ok: true, runId, queued: saved.queued === true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await setStage(sb, runId, "blocked");
@@ -212,14 +219,16 @@ Deno.serve(async (req: Request) => {
 /* ---------------- helpers ---------------- */
 
 async function fetchThreadFiles(sb: ReturnType<typeof createClient>, threadId: string): Promise<string> {
-  const { data } = await sb.from("files").select("path,content").eq("thread_id", threadId).order("path");
+  const { data, error } = await sb.from("files").select("path,content").eq("thread_id", threadId).order("path");
+  if (error) throw new Error("Could not load workspace files.");
   const rows = (data as { path: string; content: string }[] | null) ?? [];
   if (rows.length === 0) return "(empty repo)";
   return rows.map((f) => `### ${f.path}\n${f.content}`).join("\n\n");
 }
 
 async function setStage(sb: ReturnType<typeof createClient>, runId: string, state: string): Promise<void> {
-  await sb.from("agent_runs").update({ state, queued: false }).eq("id", runId);
+  const { error } = await sb.from("agent_runs").update({ state, queued: false }).eq("id", runId);
+  if (error) throw new Error(`Could not update run state to ${state}.`);
 }
 
 async function pushMessage(
@@ -230,10 +239,11 @@ async function pushMessage(
   body: string,
   diffId?: string
 ): Promise<void> {
-  await sb.from("messages").insert({
+  const { error } = await sb.from("messages").insert({
     thread_id: threadId, author_id: "agent", kind: "agent", body,
     run_id: runId, diff_id: diffId ?? null, meta, ts: Date.now(),
   });
+  if (error) throw new Error(`Could not save ${meta} run update.`);
 }
 
 interface LlmResult {
@@ -255,7 +265,7 @@ interface LlmResult {
 
 /** One structured LLM call producing plan/steps/diffs/qa in strict JSON. */
 async function callLlm(opts: {
-  key: string; provider: string; model: string; prompt: string; repoFiles: string; alternates?: string[];
+  key: string; provider: string; model: string; prompt: string; repoFiles: string; alternates?: string[]; maxTokens?: number;
 }): Promise<LlmResult> {
   const sys = [
     "You are the CO-AI engineering agent working on a team thread.",
@@ -267,6 +277,7 @@ async function callLlm(opts: {
     "- If a diff cannot be produced safely (missing context), emit a diff with after === before and a QA verdict of 'fail'.",
     "- QA is a static review only. Do NOT invent command output, test results, or claim that tests passed.",
     "- Omit tests unless supplied by an external executor. CO-AI will attach execution evidence separately.",
+    "- In the guided payment fixture, change payments.py only. Do not change test_payments.py or README.md.",
   ].join("\n");
   const user = `Thread prompt: ${opts.prompt}\n\nHarness repo files:\n${opts.repoFiles}`;
 
@@ -358,7 +369,7 @@ async function callLlm(opts: {
         model: opts.model,
         messages: [{ role: "system", content: sys }, { role: "user", content: user }],
         temperature: 0.2,
-        max_tokens: 4096,
+        max_tokens: opts.maxTokens ?? 4096,
       }),
       signal: AbortSignal.timeout(120_000),
     });
@@ -379,7 +390,7 @@ async function callLlm(opts: {
           model: m,
           messages: [{ role: "system", content: sys }, { role: "user", content: user }],
           temperature: 0.2,
-          max_tokens: 4096,
+        max_tokens: opts.maxTokens ?? 4096,
         }),
       });
       if (res.ok) {

@@ -1,0 +1,17 @@
+{
+  "checked_at": "2026-10-25T14:40:23.147Z",
+  "url": "http://127.0.0.1:4173",
+  "checks": {
+    "desktop_and_mobile_load_live_fixture": true,
+    "mobile_has_no_horizontal_overflow": true,
+    "live_view_hides_simulation_controls": true,
+    "guided_request_is_prepared_without_submission": true,
+    "chat_reaches_second_browser_live": true,
+    "shared_chat_survives_reload": true,
+    "replay_download_contains_shared_chat": true,
+    "no_browser_runtime_errors": true
+  },
+  "inference": "not attempted",
+  "sandbox": "not attempted",
+  "outcome": "passed"
+}

@@ -60,7 +60,16 @@ Deno.serve(async (req: Request) => {
     .eq("thread_id", body.threadId)
     .eq("member_id", authData.user.id)
     .maybeSingle();
-  if (!member) return json({ ok: false, reason: "forbidden" }, 403);
+  const publicDemo = Deno.env.get("COAI_PUBLIC_DEMO") === "true";
+  let allowedDemoThread = false;
+  if (publicDemo && !member) {
+    const { data: publicThread } = await sb.from("threads").select("workspace_id").eq("id", body.threadId).maybeSingle();
+    if (publicThread?.workspace_id) {
+      const { data: demoWorkspace } = await sb.from("workspaces").select("id").eq("id", publicThread.workspace_id).eq("public_demo", true).maybeSingle();
+      allowedDemoThread = Boolean(demoWorkspace);
+    }
+  }
+  if (!member && !allowedDemoThread) return json({ ok: false, reason: "forbidden" }, 403);
   const thread = (
     await sb
       .from("threads")

@@ -1,0 +1,24 @@
+{
+  "checked_at": "2026-10-26T19:08:32.743Z",
+  "checks": {
+    "anonymous_user_1": true,
+    "profile_1": true,
+    "anonymous_user_2": true,
+    "profile_2": true,
+    "independent_identities": true,
+    "public_fixture_workspace": true,
+    "public_fixture_thread": true,
+    "membership_1": true,
+    "membership_2": true,
+    "second_user_reads_fixture": true,
+    "fixture_files_cannot_be_changed_by_visitors": true,
+    "stale_run_reconciliation": true,
+    "second_user_exports_replay": true,
+    "public_github_connector_disabled": true
+  },
+  "inference": "not attempted",
+  "sandbox": "not attempted",
+  "thread_id": "a1b79fde-1e60-4af5-87da-49e41bb9c344",
+  "expired_runs": 0,
+  "outcome": "passed"
+}

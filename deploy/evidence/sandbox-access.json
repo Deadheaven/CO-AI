@@ -1,0 +1,33 @@
+{
+  "checked_at": "2026-10-26T19:09:02.309Z",
+  "execution_attempted": false,
+  "inference_attempted": false,
+  "permissions": {
+    "import": true,
+    "spawn": true,
+    "spawn_disposable": true,
+    "list": true,
+    "cancel": true,
+    "set_image_tag": true
+  },
+  "limits": {
+    "instance_max_timeout": 3600,
+    "instance_max_concurrency": 50,
+    "instance_max_layer_bytes": 12884901888,
+    "images_import_max_concurrency": 8,
+    "images_import_max_timeout": 3600
+  },
+  "token_expiration": 1793042042,
+  "image": {
+    "tag": "python:3.12-slim",
+    "uuid": "4fa16c8f-62a9-35a4-a4ea-07b7e8cd44ae"
+  },
+  "nemotron_models": [
+    "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+    "nvidia/Nemotron-3_5-Lightning",
+    "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia/Nemotron-3.5-Super-VL"
+  ],
+  "outcome": "read-only checks passed"
+}

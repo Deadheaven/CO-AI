@@ -103,7 +103,7 @@ export interface Diff {
 
 /** Approval policy (PRD §11): configurable threshold, default majority with min 2. */
 export interface ApprovalPolicy {
-  mode: "majority" | "all";
+  mode: "majority" | "all" | "fixed";
   min: number;
 }
 

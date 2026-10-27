@@ -19,11 +19,12 @@ import { DEFAULT_POLICY } from "../types";
 /**
  * Data layer over Supabase. Every function here is RLS-gated: an anonymous
  * member can only touch rows for threads/workspaces they belong to.
- * Returns null / { ok: false } on any failure so the caller can fall back
- * to the local mock (DEMO_MODE) without crashing.
+ * Returns null / { ok: false } on failure. Store policy decides whether a
+ * development-only offline preview is appropriate; production fails closed.
  */
 
 export const COLORS = ["#93c5fd", "#f0abfc", "#fda4af", "#86efac", "#fcd34d", "#67e8f9", "#a5b4fc"];
+const PUBLIC_DEMO = import.meta.env.VITE_COAI_PUBLIC_DEMO === "true";
 
 export interface Snapshot {
   meId: string;
@@ -68,7 +69,10 @@ export function msgFromRow(r: Row): ChatMsg {
     id: String(r.id),
     threadId: String(r.thread_id),
     authorId: String(r.author_id ?? "system"),
-    kind: (r.kind as ChatMsg["kind"]) ?? "chat",
+    // Agent-produced proposal messages are stored as agent/meta=diff rows.
+    // Render their linked revision as a review card, including executor evidence.
+    kind: r.kind === "agent" && r.meta === "diff" && r.diff_id != null
+      ? "diff" : (r.kind as ChatMsg["kind"]) ?? "chat",
     ts: Number(r.ts ?? 0),
   };
   if (r.body != null) m.body = String(r.body);
@@ -127,6 +131,14 @@ export function runFromRow(r: Row): AgentRun {
   if (r.not_configured != null) run.notConfigured = Boolean(r.not_configured);
   if (r.queued != null) run.queued = Boolean(r.queued);
   return run;
+}
+
+/** Turn abandoned verifier queue entries into an explicit blocked state. */
+export async function expireStaleVerificationRuns(): Promise<void> {
+  const sb = getSupabase();
+  if (!sb) return;
+  const { error } = await sb.rpc("expire_stale_verification_runs");
+  if (error) console.warn("[co-ai] could not reconcile stale verification queue:", error.message);
 }
 
 /**
@@ -192,7 +204,9 @@ async function bootBackendOnce(): Promise<{ ok: true; snapshot: Snapshot } | { o
 
   // 2. workspace ------------------------------------------------------------
   let wsId: string | undefined;
-  const { data: wsList } = await sb.from("workspaces").select("id").limit(1);
+  let wsQuery = sb.from("workspaces").select("id").limit(1);
+  if (PUBLIC_DEMO) wsQuery = wsQuery.eq("public_demo", true);
+  const { data: wsList } = await wsQuery;
   wsId = (wsList as Row[] | null)?.[0]?.id as string | undefined;
   if (!wsId) {
     const { data: newWs, error: wsErr } = await sb
@@ -205,6 +219,16 @@ async function bootBackendOnce(): Promise<{ ok: true; snapshot: Snapshot } | { o
       return { ok: false, reason: wsErr.message };
     }
     wsId = (newWs as Row).id as string;
+  }
+
+  if (PUBLIC_DEMO) {
+    const { data: fixture } = await sb.from("threads").select("id").eq("workspace_id", wsId).eq("share_code", "DEMO-COAI").maybeSingle();
+    if (!fixture) return { ok: false, reason: "public demo fixture is missing" };
+    const { data: fixtureMember } = await sb.from("thread_members").select("thread_id").eq("thread_id", fixture.id).eq("member_id", userId).maybeSingle();
+    if (!fixtureMember) {
+      const { error: memberError } = await sb.from("thread_members").insert({ thread_id: fixture.id, member_id: userId });
+      if (memberError) return { ok: false, reason: "could not join the public demo fixture" };
+    }
   }
 
   // 3. snapshot --------------------------------------------------------------
@@ -221,7 +245,11 @@ async function bootBackendOnce(): Promise<{ ok: true; snapshot: Snapshot } | { o
         sb.from("agent_runs").select("*"),
         sb.from("approvals").select("diff_id,member_id,verdict"),
         sb.from("presence").select("*"),
-        sb.from("workspaces").select("id,approval_threshold,repo_owner,repo_name,base_branch,verification_command,verification_cwd").limit(1).maybeSingle(),
+        (() => {
+          let query = sb.from("workspaces").select("id,approval_threshold,repo_owner,repo_name,base_branch,verification_command,verification_cwd").limit(1);
+          if (PUBLIC_DEMO) query = query.eq("public_demo", true);
+          return query.maybeSingle();
+        })(),
       ]);
 
     const threadRows = (threadsRes.data as Row[] | null) ?? [];
@@ -443,9 +471,10 @@ export async function voteOnDiff(diffId: string, verdict: Vote): Promise<boolean
 export async function persistRun(run: AgentRun): Promise<boolean> {
   const sb = getSupabase();
   if (!sb) return false;
+  const { data: auth } = await sb.auth.getUser();
   const { error } = await sb.from("agent_runs").upsert({
     id: run.id, thread_id: run.threadId, prompt: run.prompt, state: run.stage,
-    log: run.log, started_at: run.startedAt,
+    log: run.log, started_at: run.startedAt, requested_by: auth.user?.id ?? null,
     finished_at: run.finishedAt ?? null,
     trigger: run.trigger ?? null,
     not_configured: run.notConfigured ?? false,
@@ -641,7 +670,17 @@ export async function invokeAgent(payload: { threadId: string; runId: string; pr
     const { data, error } = await sb.functions.invoke("coai-agent", {
       body: payload,
     });
-    if (error) return { ok: false, reason: error.message };
+    if (error) {
+      let message = error.message;
+      const context = (error as { context?: unknown }).context;
+      if (context instanceof Response) {
+        try {
+          const payload = await context.clone().json() as { message?: string; reason?: string };
+          message = payload.message ?? payload.reason ?? message;
+        } catch { /* retain the SDK message */ }
+      }
+      return { ok: false, reason: error.message, message };
+    }
     return (data as AgentInvokeResult) ?? { ok: true };
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : String(e) };

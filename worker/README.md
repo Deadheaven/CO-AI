@@ -12,7 +12,8 @@ terminal result is returned.
 Required configuration for the queue worker:
 
 - sandbox base URL
-- Nebius IAM token
+- Token Factory API key with Sandboxes access (`NEBIUS_API_KEY`); the legacy
+  `NEBIUS_IAM_TOKEN` name is also accepted
 - Nebius Project ID
 - immutable image UUID or approved image tag
 
@@ -32,6 +33,18 @@ Run its dependency-free contract tests:
 ```bash
 PYTHONPATH=worker python -m unittest discover -s worker/tests -v
 ```
+
+For a bounded acceptance run from the repository root, safely load the ignored
+configuration without placing secrets in shell arguments:
+
+```bash
+node scripts/coai-worker.mjs --check
+node scripts/coai-worker.mjs --once --run-id RUN_UUID
+```
+
+The one-shot mode selects only the specified UUID and limits the command to
+60 seconds. It does not start a persistent worker. Start continuous processing
+with `node scripts/coai-worker.mjs` or the container below after acceptance.
 
 ## Run the worker
 

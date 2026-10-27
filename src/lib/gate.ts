@@ -36,6 +36,7 @@ export function countRejects(diff: Diff): number {
 export function requiredApprovals(memberCount: number, policy: ApprovalPolicy = DEFAULT_POLICY): number {
   if (memberCount <= 0) return policy.min;
   if (policy.mode === "all") return memberCount;
+  if (policy.mode === "fixed") return Math.max(policy.min, 1);
   // majority: > half, floored, never below policy.min
   return Math.max(policy.min, Math.floor(memberCount / 2) + 1);
 }

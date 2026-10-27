@@ -64,6 +64,11 @@ export const AGENT = "agent";
 
 /* ---------- live mode ---------- */
 let live = false;
+const publicDemo = import.meta.env.VITE_COAI_PUBLIC_DEMO === "true";
+
+export function isPublicDemo(): boolean {
+  return publicDemo;
+}
 
 /** True once the Supabase backend booted successfully (set by initStore). */
 export function isLive(): boolean {
@@ -98,15 +103,22 @@ async function resyncLive(): Promise<boolean> {
 
 /**
  * Boot the application data layer. With Supabase env vars configured the app
- * runs LIVE (anonymous sign-in + persisted tables). Otherwise or on failure
- * it falls back to the identical Zustand/localStorage demo mock.
+ * runs LIVE (anonymous sign-in + persisted tables). A failed backend uses the
+ * local demo only in development; production reports unavailable.
  */
-export async function initStore(): Promise<"live" | "demo"> {
+export async function initStore(): Promise<"live" | "demo" | "unavailable"> {
   const res = await bootBackend();
   if (!res.ok) {
-    useStore.getState().resetDemo(); // guarantee the demo path stays identical
-    startDemoTabSync();
-    return "demo";
+    live = false;
+    stopRealtime();
+    // A production build must never present local simulation as a working live
+    // service. Keep the offline preview for local development only.
+    if (import.meta.env.DEV) {
+      useStore.getState().resetDemo();
+      startDemoTabSync();
+      return "demo";
+    }
+    return "unavailable";
   }
   live = true;
   useStore.setState({ ...res.snapshot, simOn: true, copilot: {} });
@@ -185,7 +197,7 @@ function recountGates(threadId: string): void {
   const flipped: Diff[] = [];
   const diffs = st.diffs.map((d) => {
     if (d.threadId !== threadId || d.status !== "pending") return d;
-    if (!diffGate(d, team, DEFAULT_POLICY).canMerge) return d;
+    if (!diffGate(d, team, st.workspace?.approvalThreshold ?? DEFAULT_POLICY).canMerge) return d;
     const nd = { ...d, status: "approved" as const };
     flipped.push(nd);
     return nd;
@@ -215,7 +227,7 @@ function shipThread(threadId: string): boolean {
   if (threadDiffs.some((d) => d.status !== "approved")) return false;
 
   const team = threadTeamSize(thread, st.members);
-  const gate = threadGate(threadDiffs, team, DEFAULT_POLICY);
+  const gate = threadGate(threadDiffs, team, st.workspace?.approvalThreshold ?? DEFAULT_POLICY);
   if (!gate.canMerge) return false;
 
   const diffs = st.diffs.map((d) => (d.threadId === threadId ? { ...d, status: "approved" as const, merged: true } : d));
@@ -278,22 +290,31 @@ export const useStore = create<CoAIState>()(
           ],
         }));
         if (live) {
-          void persistRun(run);
-          void updateThreadStatus(threadId, "planning", now());
-          // M2: real loop lives in the coai-agent Edge Function; the client
-          // only fires it and reconciles via realtime. If the function is not
-          // configured, it marks the run not-configured and we fall back to
-          // the local mock so the thread stays usable (PRD §5 error path).
-          void invokeAgent({ threadId, runId, prompt }).then((res) => {
+          void (async () => {
+            if (!(await persistRun(run))) {
+              const cur = useStore.getState();
+              const currentRun = cur.runs[runId];
+              if (!currentRun) return;
+              useStore.setState({
+                runs: { ...cur.runs, [runId]: { ...currentRun, stage: "blocked" } },
+                threads: cur.threads.map((t) => (t.id === threadId ? { ...t, status: "blocked", ts: now() } : t)),
+                messages: [...cur.messages, mkMsg(threadId, AGENT_ID, "agent", "Could not queue this run. The public demo may have reached its daily limit.", { runId })],
+              });
+              return;
+            }
+            await updateThreadStatus(threadId, "planning", now());
+            // Persist the queue row before invoking the function that consumes it.
+            const res = await invokeAgent({ threadId, runId, prompt });
             if (res.ok) return;
             const cur = useStore.getState();
-            const r = cur.runs[runId];
-            if (!r) return;
+            const currentRun = cur.runs[runId];
+            if (!currentRun) return;
             useStore.setState({
-              runs: { ...cur.runs, [runId]: { ...r, notConfigured: true, stage: "blocked" } },
+              runs: { ...cur.runs, [runId]: { ...currentRun, notConfigured: res.reason === "agent-not-configured", stage: "blocked" } },
               threads: cur.threads.map((t) => (t.id === threadId ? { ...t, status: "blocked", ts: now() } : t)),
+              messages: [...cur.messages, mkMsg(threadId, AGENT_ID, "agent", res.message ?? "The agent run could not be started.", { runId })],
             });
-          });
+          })();
           return; // real mode: the function drives steps/diffs/messages via DB + realtime
         }
 
@@ -395,7 +416,16 @@ export const useStore = create<CoAIState>()(
         set((s) => ({
           diffs: s.diffs.map((d) => (d.id === diffId ? { ...d, votes, status, comment: comment ?? d.comment } : d)),
         }));
-        if (live) void voteOnDiff(diffId, verdict);
+        if (live) {
+          void voteOnDiff(diffId, verdict).then(async (saved) => {
+            if (saved) { await resyncLive(); return; }
+            set((s) => ({
+              diffs: s.diffs.map((d) => d.id === diffId ? diff : d),
+              messages: [...s.messages, mkMsg(diff.threadId, AGENT_ID, "system", "Your review could not be saved. Please try again.")],
+            }));
+          });
+          return;
+        }
         const thread = st.threads.find((t) => t.id === diff.threadId);
         if (verdict === "reject" && thread) {
           const rejectMsg = mkMsg(thread.id, st.meId, "chat", comment ? `Rejected: ${comment}` : "Rejected — let's rework this diff.");
@@ -415,6 +445,7 @@ export const useStore = create<CoAIState>()(
       },
 
       botVote: (diffId, memberId) => {
+        if (live) return;
         const st = get();
         const diff = st.diffs.find((d) => d.id === diffId);
         if (!diff) return;
@@ -431,12 +462,13 @@ export const useStore = create<CoAIState>()(
       },
 
       merge: async (threadId) => {
+        if (publicDemo) return false;
         const st = get();
         const thread = st.threads.find((t) => t.id === threadId);
         if (!thread) return false;
         const threadDiffs = st.diffs.filter((d) => d.threadId === threadId);
         const team = threadTeamSize(thread, st.members);
-        const gate = threadGate(threadDiffs, team, DEFAULT_POLICY);
+        const gate = threadGate(threadDiffs, team, st.workspace?.approvalThreshold ?? DEFAULT_POLICY);
         if (!gate.canMerge) {
           // structural: never unlock without the gate
           useStore.setState((s) => ({
@@ -491,6 +523,7 @@ export const useStore = create<CoAIState>()(
       },
 
       createThread: async (name, description) => {
+        if (publicDemo) throw new Error("Thread creation is disabled in the guided public demo.");
         if (live) {
           const res = await createLiveThread({ name, description, memberId: get().meId });
           if (!res) {
@@ -528,6 +561,7 @@ export const useStore = create<CoAIState>()(
       },
 
       joinThread: async (code) => {
+        if (publicDemo) return null;
         const c = code.trim().toUpperCase();
         if (live) {
           const id = await joinLiveThread(c, get().meId);
@@ -614,7 +648,7 @@ export const useStore = create<CoAIState>()(
 
       kickstartVotes: (threadId) => {
         const st = get();
-        if (!st.simOn) return;
+        if (live || !st.simOn) return;
         const pending = st.diffs.filter((d) => d.threadId === threadId && d.status === "pending");
         if (!pending.length) return;
         pending.forEach((diff) => {
@@ -652,7 +686,7 @@ export const useStore = create<CoAIState>()(
       },
 
       setSim: (on) => set({ simOn: on }),
-      setWorkspace: (workspace) => set({ workspace }),
+      setWorkspace: (workspace) => { if (!publicDemo) set({ workspace }); },
     }),
     {
       name: "coai-store-v1",
@@ -826,6 +860,16 @@ function applyRealtimeEvent(ev: RealtimeEvent): void {
       });
       break;
     }
+    case "thread_members": {
+      const threadId = String(row.thread_id ?? "");
+      const memberId = String(row.member_id ?? "");
+      if (!threadId || !memberId) break;
+      useStore.setState({ threads: st.threads.map((thread) => thread.id !== threadId ? thread : {
+        ...thread,
+        memberIds: event === "DELETE" ? thread.memberIds.filter((id) => id !== memberId) : [...new Set([...thread.memberIds, memberId])],
+      }) });
+      break;
+    }
     case "messages": {
       if (!row.id) break;
       if (event === "DELETE") {
@@ -850,7 +894,9 @@ function applyRealtimeEvent(ev: RealtimeEvent): void {
       if (event === "DELETE") {
         useStore.setState({ diffs: st.diffs.filter((x) => x.id !== id) });
       } else {
-        useStore.setState({ diffs: upsertById(st.diffs, diffFromRow(row)) });
+        const updated = diffFromRow(row);
+        const existing = st.diffs.find((d) => d.id === id);
+        useStore.setState({ diffs: upsertById(st.diffs, { ...updated, votes: { ...updated.votes, ...existing?.votes } }) });
       }
       break;
     }
@@ -878,7 +924,8 @@ function applyRealtimeEvent(ev: RealtimeEvent): void {
     case "threads": {
       if (!row.id) break;
       const thread = threadFromRow(row);
-      useStore.setState({ threads: upsertById(st.threads, thread).sort((a, b) => b.ts - a.ts) });
+      const existing = st.threads.find((t) => t.id === thread.id);
+      useStore.setState({ threads: upsertById(st.threads, { ...thread, memberIds: existing?.memberIds ?? thread.memberIds }).sort((a, b) => b.ts - a.ts) });
       break;
     }
     default:

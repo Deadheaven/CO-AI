@@ -6,11 +6,12 @@ CO-AI turns a task into a reviewable decision trail: request, planned patch,
 human feedback, execution evidence, revision-bound approvals, and a GitHub PR.
 It is built for small engineering teams, not autonomous deployment.
 
-> Status: early hackathon build. The Nebius-hosted demo path is prepared; it needs
-> project credentials and a live sandbox smoke test before it is judge-ready.
-> Demo mode remains available without credentials.
-> The hosted approval gate intentionally rejects model-authored test output;
-> executor-backed evidence is required before a live merge can unlock.
+> Status: hosted submission in progress. The Sites frontend and Supabase
+> backend are active. One live Nemotron proposal and queue-backed passing
+> Sandbox run are verified; the patch is awaiting human review. The current
+> worker is local; the failing-run, live-review, video, and submission gates
+> are tracked in [deploy/SUBMISSION_STATUS.md](deploy/SUBMISSION_STATUS.md).
+> The approval gate requires executor-backed evidence for the exact revision.
 
 ## Run locally
 
@@ -19,7 +20,9 @@ npm install
 npm run dev
 ```
 
-Without environment variables, CO-AI runs its visibly labelled local demo.
+Without environment variables, local development runs its visibly labelled
+offline demo. Production builds fail closed when the live backend is
+unavailable; they never present simulated state as a live service.
 
 To connect a Supabase project, copy `.env.example` to `.env.local`, fill in
 the **publishable** project URL and anonymous key, and apply migrations in
@@ -50,11 +53,12 @@ supabase functions deploy coai-agent
 
 ## Nebius demo deployment
 
-The demo can serve the built web app and run the queue worker on one Nebius AI
-Cloud VM. Caddy provides HTTPS for a domain pointed at that VM. The worker
-connects to Nebius Token Factory Sandboxes, and the Supabase Edge Function calls
-Nemotron through Token Factory. See [deploy/NEBIUS.md](deploy/NEBIUS.md) for VM
-setup, secret placement, deploy, smoke-test, and teardown instructions.
+The static frontend can stay on Sites while Supabase hosts auth and data. The
+worker can run separately. Do not create a paid VM unless its cost is covered
+by verified AI Cloud credits; the standard hackathon Token Factory credit is
+for inference, not VM hosting. See
+[deploy/NEBIUS.md](deploy/NEBIUS.md) for VM setup, secret placement, either
+deployment mode, smoke-test, and teardown instructions.
 
 ## Development checks
 
@@ -65,10 +69,11 @@ npm run build
 npm run preflight
 ```
 
-`npm run preflight -- --live` additionally checks for populated browser and
-worker config files and reads linked Supabase migration, active-function, and
-required-secret **names** status. It never prints secret values. The live check
-requires Supabase CLI authentication and does not deploy or modify remote state.
+`npm run preflight -- --live` additionally checks browser and worker config and
+reads linked Supabase migration, active-function, and required-secret **names**
+status. A Sites static-host manifest removes the combined-VM `COAI_DOMAIN`
+requirement. The check never prints secret values, requires Supabase CLI
+authentication, and does not deploy or modify remote state.
 
 ## Trust model
 
@@ -86,13 +91,22 @@ requires Supabase CLI authentication and does not deploy or modify remote state.
 
 ## Current limitations
 
-Repository import, isolated verification, and replay export are implemented.
-The Nebius demo deployment configuration is provided, but deployment, live
-Token Factory inference, sandbox execution, and the two-user smoke test still
-require configured accounts and credentials. The current GitHub PAT path is
-available; a GitHub App installation flow is not part of the hackathon demo
-critical path. Replay export excludes repository contents and raw executor
-output.
+The public demo is a synthetic Python fixture in a dedicated `public_demo`
+workspace. Set `VITE_COAI_PUBLIC_DEMO=true` in the static build and
+`COAI_PUBLIC_DEMO=true` in Supabase Edge Function secrets to enable guided
+controls, block GitHub actions, and enforce server-side run caps. Apply
+migration `0011_public_demo_guards.sql` before building or opening that mode.
+It caps runs at two per anonymous identity and ten total per UTC day, limits
+prompts to 1,000 characters, and limits generated output to 2,048 tokens. This
+is a request cap, not a monetary budget meter.
+
+Migrations `0011`–`0016` and the updated Edge Functions are deployed. One live
+Nemotron proposal has passed the configured tests in a disposable Sandbox. The
+`payments.py` diff remains pending human review. The current worker runs locally
+and is not an always-on judging host. A deliberately failing Sandbox run,
+live reviewer approvals, a monetary usage limit, and full judge-flow browser
+acceptance remain open. The active Site is public. Replay export excludes
+repository contents and raw executor output.
 
 ## Contributing
 

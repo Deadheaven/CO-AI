@@ -47,6 +47,10 @@ describe("requiredApprovals (threshold)", () => {
     expect(requiredApprovals(3, all)).toBe(3);
     expect(requiredApprovals(1, all)).toBe(1);
   });
+  it("keeps a fixed review threshold as public visitors join", () => {
+    expect(requiredApprovals(2, { mode: "fixed", min: 2 })).toBe(2);
+    expect(requiredApprovals(100, { mode: "fixed", min: 2 })).toBe(2);
+  });
 });
 
 describe("evidence gate", () => {

@@ -18,9 +18,10 @@ import {
   X,
 } from "lucide-react";
 import { Avatar, AvatarStack, Button, CopyButton, EmptyState, LiveDot, StatusPill, cn } from "./ui";
-import { useStore } from "../store";
+import { useStore, isLive, isPublicDemo } from "../store";
 import { STATUS_ORDER, buildUnifiedDiff, fmtTime } from "../lib/engine";
-import { invokeGhImport, invokeReplayExport } from "../lib/api";
+import { hasPassingEvidence, requiredApprovals } from "../lib/gate";
+import { expireStaleVerificationRuns, invokeGhImport, invokeReplayExport } from "../lib/api";
 import type { ChatMsg, CopilotMsg, Diff, RepoFile, Step, ThreadStatus } from "../types";
 
 /* Module-level constant: stable reference for the empty copilot history,
@@ -154,16 +155,17 @@ function StepsPanel({ threadId, steps, members }: { threadId: string; steps: Ste
 /* ================= diff card ================= */
 function DiffCard({ diff, members, onOpenFile }: { diff: Diff; members: Map<string, { name: string; color: string; online?: boolean }>; onOpenFile: (p: string) => void }) {
   const vote = useStore((s) => s.vote);
+  const policy = useStore((s) => s.workspace?.approvalThreshold);
   const [open, setOpen] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [note, setNote] = useState("");
   const voters = [...members.entries()].filter(([, m]) => m);
   const approvalCount = voters.filter(([id]) => diff.votes[id] === "approve").length;
-  const required = Math.max(2, Math.floor(voters.length / 2) + 1);
+  const required = requiredApprovals(voters.length, policy);
   const pct = Math.min(100, Math.round((approvalCount / Math.max(1, required)) * 100));
   const text = useMemo(() => buildUnifiedDiff(diff.path, diff.before, diff.after), [diff]);
-  const hasEvidence = Boolean(diff.evidence?.qa?.verdict);
-  const evidencePass = diff.evidence?.qa?.verdict === "pass" && (!diff.evidence?.tests || diff.evidence.tests.passed);
+  const hasEvidence = diff.evidenceSource === "executor" && Boolean(diff.evidence?.tests);
+  const evidencePass = hasPassingEvidence(diff);
   const [evOpen, setEvOpen] = useState(false);
   const statusChip =
     diff.status === "approved" ? (
@@ -213,11 +215,11 @@ function DiffCard({ diff, members, onOpenFile }: { diff: Diff; members: Map<stri
             >
               <ShieldCheck size={13} className={cn("shrink-0", evidencePass ? "text-success" : "text-foreground/40")} />
               <span className="text-[10.5px] font-semibold">
-                {hasEvidence ? (evidencePass ? "Evidence attached — self-QA passed" : "Evidence attached — self-QA failed") : "No evidence yet"}
+                {hasEvidence ? (evidencePass ? "Sandbox verification passed" : "Sandbox verification failed") : "Unverified — no sandbox result yet"}
               </span>
               {evOpen ? <ChevronDown size={12} className="ml-auto" /> : <ChevronRight size={12} className="ml-auto" />}
             </button>
-            {evOpen && diff.evidence && (
+            {evOpen && hasEvidence && diff.evidence && (
               <div className="scroll-thin max-h-48 space-y-2 overflow-auto border-t border-border/70 px-3 py-2">
                 <p className="text-[11px] leading-relaxed text-foreground/70">{diff.evidence.qa.summary}</p>
                 <ul className="flex flex-col gap-1">
@@ -276,7 +278,7 @@ function DiffCard({ diff, members, onOpenFile }: { diff: Diff; members: Map<stri
               </Button>
               {diff.status === "pending" && (
                 <>
-                  <Button variant="primary" size="sm" onClick={() => vote(diff.id, "approve")}>
+                  <Button variant="primary" size="sm" disabled={!evidencePass} onClick={() => vote(diff.id, "approve")}>
                     <ThumbsUp size={12} /> Approve
                   </Button>
                   {rejecting ? (
@@ -389,8 +391,51 @@ function Message({
   );
 }
 
+const DEMO_EXAMPLE_PROMPT = "/fix Change payments.py only: make charge retries idempotent using an optional idempotency_key and ledger. Repeating a key must return the original charge. Preserve calls without a key, keep the existing tests unchanged, and avoid external dependencies.";
+
+function JudgeWalkthrough({ onTry }: { onTry: () => void }) {
+  return (
+    <section className="mb-5 rounded-2xl border border-accent/25 bg-accent/5 p-4" aria-label="Judge walkthrough">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-accent">Judge walkthrough</p>
+          <h2 className="mt-1 text-sm font-semibold">Try a task, then review the work</h2>
+        </div>
+        <span className="rounded-full border border-border bg-panel px-2 py-1 text-[9px] text-foreground/50">Example conversation · not a real run</span>
+      </div>
+
+      <div className="mx-auto flex max-w-xl flex-col gap-2">
+        <div className="flex justify-end">
+          <div className="max-w-[90%] rounded-2xl rounded-tr-sm bg-primary px-3 py-2 text-[11px] leading-relaxed text-on-primary">
+            “Make charge retries idempotent. Add a key and ledger; pass the existing fixture tests.”
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-agent/40 bg-agent/10 text-agent" aria-hidden="true"><Bot size={13} /></span>
+          <div className="max-w-[90%] rounded-2xl rounded-tl-sm border border-agent/25 bg-panel px-3 py-2 text-[11px] leading-relaxed">
+            The agent proposes a patch. Inspect the changed files and diff, then check the sandbox evidence before approving. An agent explanation alone is not test evidence.
+          </div>
+        </div>
+      </div>
+
+      <ol className="mx-auto mt-3 grid max-w-xl gap-1 text-[10px] text-foreground/60 sm:grid-cols-2">
+        <li><span className="mr-1.5 font-semibold text-accent">1.</span>Describe the behavior and constraints.</li>
+        <li><span className="mr-1.5 font-semibold text-accent">2.</span>Inspect every proposed diff.</li>
+        <li><span className="mr-1.5 font-semibold text-accent">3.</span>Confirm sandbox evidence, then approve or reject.</li>
+        <li><span className="mr-1.5 font-semibold text-accent">4.</span>Export replay to inspect the decision trail.</li>
+      </ol>
+
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-3">
+        <p className="text-[9.5px] text-foreground/45">This fixture never writes to GitHub. Sandbox evidence appears only after the worker verifies a run.</p>
+        <Button variant="outline" size="sm" onClick={onTry}>Try this request</Button>
+      </div>
+    </section>
+  );
+}
+
 /* ================= main room ================= */
 export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => void }) {
+  const publicDemo = isPublicDemo();
   const threads = useStore((s) => s.threads);
   const members = useStore((s) => s.members);
   const messages = useStore((s) => s.messages);
@@ -431,8 +476,14 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
   // share-code thread created by another device used to show "0 online").
   const viewer = members.find((m) => m.id === meId);
   const tRuns = Object.values(runs).filter((r) => r.threadId === id);
-  const activeRun = tRuns.find((r) => !r.queued && ["queue", "plan", "write", "qa", "review"].includes(r.stage));
-  const queuedRuns = tRuns.filter((r) => r.queued);
+  const activeRun = [...tRuns].sort((a, b) => b.startedAt - a.startedAt).find((r) =>
+    r.queued || ["queue", "plan", "write", "qa"].includes(r.stage));
+  useEffect(() => {
+    if ((!activeRun?.queued && activeRun?.stage !== "qa") || !isLive()) return;
+    void expireStaleVerificationRuns();
+    const timer = window.setInterval(() => void expireStaleVerificationRuns(), 15_000);
+    return () => window.clearInterval(timer);
+  }, [activeRun?.id, activeRun?.queued]);
   // Only the MOST RECENT run decides the "agent not configured" banner — a
   // stale failed run must not keep claiming the agent is unconfigured after a
   // newer run succeeded (the misleading banner QA caught on KICK-90).
@@ -445,9 +496,9 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
 
   // M3: merge gate state (threshold = majority of thread members, min 2)
   const teamCount = tMembers.length;
-  const required = Math.max(2, Math.floor(teamCount / 2) + 1);
-  const mergeable = pendingDiffs.length === 0 && allDiffs.length > 0 && allDiffs.every((d) => d.status === "approved") && allDiffs.every((d) => d.evidence?.qa?.verdict === "pass");
-  const missingEvidence = allDiffs.some((d) => d.status === "approved" && d.evidence?.qa?.verdict !== "pass");
+  const required = requiredApprovals(teamCount, workspace?.approvalThreshold);
+  const mergeable = pendingDiffs.length === 0 && allDiffs.length > 0 && allDiffs.every((d) => d.status === "approved") && allDiffs.every(hasPassingEvidence);
+  const missingEvidence = allDiffs.some((d) => d.status === "approved" && !hasPassingEvidence(d));
 
   useEffect(() => {
     kickstartVotes(id);
@@ -534,7 +585,7 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
             {tMembers.filter((m) => m.online).length + (viewer?.online && !tMembers.some((m) => m.id === meId) ? 1 : 0)} online
           </span>
           <AvatarStack members={tMembers} />
-          {workspace?.repo && <Button variant="outline" size="sm" onClick={() => void doImport()} disabled={importing}><FolderOpen size={14} /> {importing ? "Importing…" : "Import repo"}</Button>}
+          {!publicDemo && workspace?.repo && <Button variant="outline" size="sm" onClick={() => void doImport()} disabled={importing}><FolderOpen size={14} /> {importing ? "Importing…" : "Import repo"}</Button>}
           {importMessage && <span className="hidden max-w-40 truncate text-[10px] text-foreground/50 sm:inline" title={importMessage}>{importMessage}</span>}
           <Button variant={rightOpen ? "outline" : "ghost"} size="sm" onClick={() => setRightOpen(!rightOpen)} aria-label="Toggle copilot panel">
             <PanelRight size={15} />
@@ -579,13 +630,14 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
             <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-agent/8 px-4 py-1.5">
               <span className="flex items-center gap-2 text-[11px] text-agent">
                 <span className="pulse-dot relative h-2 w-2 rounded-full bg-agent" />
-                Agent run {activeRun.stage === "queue" ? "queued" : activeRun.stage.replace("_", " ")} — {activeRun.prompt.slice(0, 60)}
+                {activeRun.queued
+                  ? "Proposal ready — waiting for a sandbox verifier"
+                  : activeRun.stage === "queue"
+                    ? "Preparing proposal"
+                    : activeRun.stage === "qa"
+                      ? "Verifying proposal in sandbox"
+                      : `Preparing proposal — ${activeRun.stage.replace("_", " ")}`} — {activeRun.prompt.slice(0, 60)}
               </span>
-              {queuedRuns.length > 0 && (
-                <span className="rounded-full bg-foreground/10 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wide text-foreground/55">
-                  {queuedRuns.length} queued
-                </span>
-              )}
             </div>
           )}
           {latestRun?.notConfigured && (
@@ -605,7 +657,7 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
               </Button>
             </div>
           )}
-          {!pendingDiffs.length && mergeable && thread.status !== "shipped" && (
+          {!publicDemo && !pendingDiffs.length && mergeable && thread.status !== "shipped" && (
             <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-success/8 px-4 py-1.5">
               <span className="flex items-center gap-1.5 text-[11px] text-success">
                 <ShieldCheck size={13} /> Approval gate passed — evidence attached, threshold met.
@@ -615,20 +667,30 @@ export default function ThreadRoom({ id, onBack }: { id: string; onBack: () => v
               </Button>
             </div>
           )}
-          {thread.status === "shipped" && allDiffs.length > 0 && (
+          {!publicDemo && thread.status === "shipped" && allDiffs.length > 0 && (
             <div className="flex items-center gap-2 border-b border-border/40 bg-success/8 px-4 py-1.5">
               <span className="flex items-center gap-1.5 text-[11px] text-success">
                 <Check size={13} /> Shipped & merged — the approved diffs on this thread landed on the repo.
               </span>
             </div>
           )}
-          {!pendingDiffs.length && allDiffs.length > 0 && !mergeable && thread.status === "review" && (
-            <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-foreground/5 px-4 py-1.5">
-              <span className="text-[11px] text-foreground/55">
-                {missingEvidence ? "Merge locked — evidence missing on an approved diff." : `Merge locked — needs ${required} approvals and evidence on every diff.`}
+          {publicDemo && !pendingDiffs.length && mergeable && (
+            <div className="flex items-center gap-2 border-b border-border/60 bg-success/8 px-4 py-1.5">
+              <span className="flex items-center gap-1.5 text-[11px] text-success">
+                <ShieldCheck size={13} /> Review gate passed — this public fixture does not write to a GitHub repository.
               </span>
             </div>
           )}
+          {!pendingDiffs.length && allDiffs.length > 0 && !mergeable && thread.status === "review" && (
+            <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-foreground/5 px-4 py-1.5">
+              <span className="text-[11px] text-foreground/55">
+                {publicDemo
+                  ? missingEvidence ? "Review is waiting for sandbox evidence on this revision." : `Review is waiting for ${required} approvals and sandbox evidence.`
+                  : missingEvidence ? "Merge locked — evidence missing on an approved diff." : `Merge locked — needs ${required} approvals and evidence on every diff.`}
+              </span>
+            </div>
+          )}
+          {publicDemo && <div className="shrink-0 px-4 pt-3"><div className="mx-auto max-w-2xl"><JudgeWalkthrough onTry={() => setDraft(DEMO_EXAMPLE_PROMPT)} /></div></div>}
           <div ref={feedRef} className="scroll-thin flex-1 overflow-y-auto px-4 py-4">
             {tMessages.length === 0 ? (
               <div className="mx-auto mt-16 max-w-sm">

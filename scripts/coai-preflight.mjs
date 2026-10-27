@@ -3,7 +3,7 @@ import fs from "node:fs";
 import process from "node:process";
 
 const live = process.argv.includes("--live");
-const migrationVersions = Array.from({ length: 10 }, (_, index) =>
+const migrationVersions = Array.from({ length: 16 }, (_, index) =>
   String(index + 1).padStart(4, "0"),
 );
 const localMigrations = fs.readdirSync("supabase/migrations");
@@ -26,6 +26,18 @@ function envNamesFromFile(path) {
   return names;
 }
 
+function envValue(name, paths) {
+  if (process.env[name] !== undefined) return process.env[name];
+  for (const path of paths) {
+    if (!fs.existsSync(path)) continue;
+    for (const line of fs.readFileSync(path, "utf8").split(/\r?\n/)) {
+      const match = line.match(new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=\\s*(.*?)\\s*$`));
+      if (match) return match[1].replace(/^("|')(.*)\1$/, "$2").trim();
+    }
+  }
+  return undefined;
+}
+
 function parseCliJson(stdout) {
   try {
     return JSON.parse(stdout.trim());
@@ -40,10 +52,20 @@ function listItems(value, key) {
   return null;
 }
 
+function hasSitesStaticManifest() {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(".openai/hosting.json", "utf8"));
+    return typeof manifest.project_id === "string" &&
+      typeof manifest.static?.directory === "string";
+  } catch {
+    return false;
+  }
+}
+
 function supabaseCli(args) {
   const result = spawnSync("npx", ["supabase", ...args], {
     encoding: "utf8",
-    timeout: 12_000,
+    timeout: 30_000,
     maxBuffer: 2 * 1024 * 1024,
   });
   if (result.error || result.status !== 0) return null;
@@ -58,7 +80,7 @@ function report(label, missing) {
 function main() {
   console.log(`CO-AI preflight (${live ? "linked deployment" : "local"})`);
   console.log(
-    `local migrations: ${missingLocalMigrations.length ? `missing ${missingLocalMigrations.join(", ")}` : "0001-0010 present"}`,
+    `local migrations: ${missingLocalMigrations.length ? `missing ${missingLocalMigrations.join(", ")}` : "0001-0016 present"}`,
   );
   if (missingLocalMigrations.length) process.exitCode = 1;
 
@@ -78,17 +100,25 @@ function main() {
   const workerNames = new Set([...shellNames, ...envNamesFromFile("worker/.env.worker")]);
   report("browser config", [
     ...["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY"].filter((name) => !browserNames.has(name)),
-    ...["COAI_DOMAIN"].filter((name) => !browserNames.has(name)),
   ]);
+  const publicDemoValue = envValue("VITE_COAI_PUBLIC_DEMO", [".env.local", ".env.nebius"]);
+  report("public demo frontend mode", publicDemoValue === "true" ? [] : ["VITE_COAI_PUBLIC_DEMO=true"]);
+  if (hasSitesStaticManifest()) {
+    console.log("frontend host config: Sites static manifest present (COAI_DOMAIN not required)");
+  } else {
+    report("combined Nebius frontend config", [
+      ...["COAI_DOMAIN"].filter((name) => !browserNames.has(name)),
+    ]);
+  }
   report("worker host config", [
     ...[
       "SUPABASE_URL",
       "SUPABASE_SERVICE_ROLE_KEY",
       "NEBIUS_SANDBOX_BASE_URL",
-      "NEBIUS_IAM_TOKEN",
       "NEBIUS_PROJECT_ID",
       "NEBIUS_SANDBOX_IMAGE",
     ].filter((name) => !workerNames.has(name)),
+    ...(!workerNames.has("NEBIUS_API_KEY") && !workerNames.has("NEBIUS_IAM_TOKEN") ? ["NEBIUS_API_KEY (or legacy NEBIUS_IAM_TOKEN)"] : []),
   ]);
 
   const projectRefPath = "supabase/.temp/project-ref";
@@ -100,7 +130,7 @@ function main() {
     return;
   }
 
-  const secrets = supabaseCli(["secrets", "list", "--project-ref", projectRef, "--output-format", "json"]);
+  const secrets = supabaseCli(["secrets", "list", "--project-ref", projectRef, "--output", "json"]);
   const secretItems = listItems(secrets, "secrets");
   if (!secretItems) {
     console.log("Supabase function secrets: unavailable (CLI auth or network check failed)");
@@ -112,7 +142,7 @@ function main() {
       missing.push("nebius (or legacy NEBIUS_API_KEY)");
     }
     if (!names.has("COAI_LLM_PROVIDER")) missing.push("COAI_LLM_PROVIDER=nebius");
-    if (!names.has("GITHUB_PAT")) missing.push("GITHUB_PAT (current connector requirement)");
+    if (!names.has("COAI_PUBLIC_DEMO")) missing.push("COAI_PUBLIC_DEMO=true");
     report("Supabase function secrets", missing);
   }
 
@@ -128,7 +158,7 @@ function main() {
     report("remote migrations", mismatched.length ? mismatched : []);
   }
 
-  const functions = supabaseCli(["functions", "list", "--project-ref", projectRef, "--output-format", "json"]);
+  const functions = supabaseCli(["functions", "list", "--project-ref", projectRef, "--output", "json"]);
   const functionItems = listItems(functions, "functions");
   if (!functionItems) {
     console.log("Edge Functions: unavailable (CLI auth or network check failed)");
